@@ -1,8 +1,7 @@
-/* PRO SAFE script.js
-   - Nessuna autenticazione
-   - Protezioni anti-abuso client-side: token bucket, debounce, backoff, challenge
-   - Caching in-memory + localStorage, fetch cancellabili
-   - Map move updates, autocomplete, infinite scroll
+/* script.js — versione corretta e stabile
+   - Assicura che tutti i controlli funzionino
+   - Event listeners attaccati dopo DOMContentLoaded
+   - Debounce, AbortController, caching, gestione errori
 */
 
 /* CONFIG */
@@ -11,108 +10,46 @@ const DEFAULT_RADIUS = 10;
 const PAGE_SIZE = 12;
 const MAP_DEFAULT = { lat:44.8015, lon:10.3280, zoom:12 };
 
-/* STATE */
+/* STATO */
 let map, markerCluster, currentStations = [], filteredStations = [], currentPage = 1;
-let lastFetchController = null;
+let lastController = null;
 const apiCache = new Map();
-const geocodeCacheKey = 'gc_cache_safe_v1';
+const geocodeCacheKey = 'gc_cache_v_final';
 let geocodeCache = loadGeocodeCache();
 
-/* CLIENT RATE LIMIT (token bucket) */
-const bucket = {
-  capacity: 8,
-  tokens: 8,
-  refillRatePerSec: 1.5,
-  lastRefill: Date.now()
-};
-function refillBucket(){
-  const now = Date.now();
-  const elapsed = (now - bucket.lastRefill) / 1000;
-  const add = elapsed * bucket.refillRatePerSec;
-  if (add > 0){
-    bucket.tokens = Math.min(bucket.capacity, bucket.tokens + add);
-    bucket.lastRefill = now;
-  }
-}
-function consumeToken(){
-  refillBucket();
-  if (bucket.tokens >= 1){ bucket.tokens -= 1; return true; }
-  return false;
-}
-
-/* ABUSE DETECTION */
-let abuseCounter = 0;
-let lastMapMoveTime = 0;
-function recordMapMove(){
-  const now = Date.now();
-  if (now - lastMapMoveTime < 600) abuseCounter++;
-  else abuseCounter = Math.max(0, abuseCounter - 1);
-  lastMapMoveTime = now;
-  if (abuseCounter >= 6) triggerChallenge('Movimenti mappa troppo rapidi rilevati. Premi qui per confermare e continuare.');
-}
-
-/* CHALLENGE */
-let challengeActive = false;
-function triggerChallenge(message){
-  if (challengeActive) return;
-  challengeActive = true;
-  const notice = document.getElementById('abuseNotice');
-  notice.textContent = message;
-  notice.classList.add('show');
-  notice.setAttribute('aria-hidden','false');
-  notice.onclick = () => {
-    challengeActive = false;
-    abuseCounter = 0;
-    notice.classList.remove('show');
-    notice.setAttribute('aria-hidden','true');
-    notice.onclick = null;
-    bucket.tokens = bucket.capacity;
-    bucket.lastRefill = Date.now();
-  };
-}
-
-/* FETCH wrapper with AbortController and backoff handling */
+/* UTILS */
+function debounce(fn, wait=250){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); }; }
 async function fetchJson(url, opts={}, timeout=12000){
-  if (!consumeToken()){
-    triggerChallenge('Troppe richieste in breve. Premi la notifica per confermare.');
-    throw new Error('Rate limit client-side attivato');
-  }
-  if (lastFetchController) { try { lastFetchController.abort(); } catch{} lastFetchController = null; }
+  if (lastController){ try { lastController.abort(); } catch{} lastController = null; }
   const controller = new AbortController();
-  lastFetchController = controller;
+  lastController = controller;
   const id = setTimeout(()=>controller.abort(), timeout);
   try {
     const res = await fetch(url, { signal: controller.signal, ...opts });
     clearTimeout(id);
-    lastFetchController = null;
-    if (res.status === 429){
-      await new Promise(r => setTimeout(r, 800 + Math.random()*800));
-      throw new Error('Server rate limit (429)');
-    }
+    lastController = null;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
-  } catch (err) {
-    clearTimeout(id);
-    lastFetchController = null;
-    throw err;
-  }
+  } catch (err) { clearTimeout(id); lastController = null; throw err; }
 }
-
-/* UTIL */
 function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function loadGeocodeCache(){ try { return JSON.parse(localStorage.getItem(geocodeCacheKey) || '{}'); } catch { return {}; } }
 function saveGeocodeCache(obj){ try { localStorage.setItem(geocodeCacheKey, JSON.stringify(obj)); } catch {} }
 
-/* MAP */
+/* MAP INIT */
 function initMap(lat=MAP_DEFAULT.lat, lon=MAP_DEFAULT.lon, zoom=MAP_DEFAULT.zoom){
   if (!map){
     map = L.map('map', { zoomControl:true }).setView([lat, lon], zoom);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OpenStreetMap' }).addTo(map);
     markerCluster = L.markerClusterGroup({ chunkedLoading:true, maxClusterRadius:50 });
     map.addLayer(markerCluster);
-    map.on('moveend', debounce(()=>{ recordMapMove(); onMapMove(); }, 300));
-  } else map.setView([lat, lon], zoom);
+    map.on('moveend', debounce(onMapMove, 350));
+  } else {
+    map.setView([lat, lon], zoom);
+  }
 }
+
+/* ICON + MARKER */
 function createSvgIcon(fuel){
   const color = (fuel||'').toLowerCase().includes('benzina') ? '#ff6b6b'
     : (fuel||'').toLowerCase().includes('gasolio') ? '#00d4ff'
@@ -135,17 +72,21 @@ function setLoading(on){
   const results = document.getElementById('results');
   if (on){
     results.innerHTML = Array.from({length:6}).map(()=>`<div class="station skeleton"></div>`).join('');
-    markerCluster.clearLayers();
+    if (markerCluster) markerCluster.clearLayers();
   }
 }
 function renderStationsPage(page=1){
   const container = document.getElementById('results');
   container.innerHTML = '';
-  if (!filteredStations || filteredStations.length===0){ container.innerHTML = `<div class="station"><p class="meta">Nessun distributore trovato.</p></div>`; markerCluster.clearLayers(); return; }
+  if (!filteredStations || filteredStations.length===0){
+    container.innerHTML = `<div class="station"><p class="meta">Nessun distributore trovato.</p></div>`;
+    if (markerCluster) markerCluster.clearLayers();
+    return;
+  }
   currentPage = page;
   const start = (page-1)*PAGE_SIZE;
   const pageItems = filteredStations.slice(start, start+PAGE_SIZE);
-  markerCluster.clearLayers();
+  if (markerCluster) markerCluster.clearLayers();
   pageItems.forEach((s, idx) => {
     addMarker(s);
     const card = document.createElement('article'); card.className='station';
@@ -159,26 +100,37 @@ function renderStationsPage(page=1){
 function renderPagination(totalPages, current){
   const p = document.getElementById('pagination'); p.innerHTML='';
   if (totalPages<=1) return;
-  const btn = (label,page,disabled=false)=>{ const b=document.createElement('button'); b.textContent=label; b.disabled=disabled; b.addEventListener('click',()=>renderStationsPage(page)); return b; };
-  p.appendChild(btn('«',1,current===1));
-  const start=Math.max(1,current-2), end=Math.min(totalPages,current+2);
-  for(let i=start;i<=end;i++){ const b=btn(i,i); if(i===current) b.classList.add('chip','active'); p.appendChild(b); }
-  p.appendChild(btn('»',totalPages,current===totalPages));
+  const addBtn = (label, page, disabled=false) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.disabled = disabled;
+    b.addEventListener('click', ()=> renderStationsPage(page));
+    return b;
+  };
+  p.appendChild(addBtn('«', 1, current===1));
+  const start = Math.max(1, current-2), end = Math.min(totalPages, current+2);
+  for (let i=start;i<=end;i++){
+    const b = addBtn(i, i);
+    if (i===current) b.classList.add('chip','active');
+    p.appendChild(b);
+  }
+  p.appendChild(addBtn('»', totalPages, current===totalPages));
 }
 
 /* FILTERS */
 function applyFilters({ fuel='', quick='', sort='distance' } = {}){
   let list = currentStations.slice();
   if (fuel) list = list.filter(s => (s.carburante||'').toLowerCase() === fuel.toLowerCase());
-  if (quick){ const q=quick.toLowerCase(); list = list.filter(s => (s.nome||'').toLowerCase().includes(q) || (s.indirizzo||'').toLowerCase().includes(q)); }
+  if (quick){ const q = quick.toLowerCase(); list = list.filter(s => (s.nome||'').toLowerCase().includes(q) || (s.indirizzo||'').toLowerCase().includes(q)); }
   if (sort==='price-asc') list.sort((a,b)=> (a.prezzo||Infinity)-(b.prezzo||Infinity));
   else if (sort==='price-desc') list.sort((a,b)=> (b.prezzo||-Infinity)-(a.prezzo||-Infinity));
   else if (sort==='updated') list.sort((a,b)=> new Date(b.aggiornato)-new Date(a.aggiornato));
   else list.sort((a,b)=> (a.distanza||Infinity)-(b.distanza||Infinity));
-  filteredStations = list; renderStationsPage(1);
+  filteredStations = list;
+  renderStationsPage(1);
 }
 
-/* GEOCODING / REVERSE */
+/* GEOCODING / REVERSE (cache) */
 async function reverseGeocodeEnhanced(lat, lon){
   const key = `${lat.toFixed(5)},${lon.toFixed(5)}`;
   if (geocodeCache[key]) return geocodeCache[key];
@@ -207,7 +159,7 @@ async function reverseGeocodeEnhanced(lat, lon){
   } catch (err){ return null; }
 }
 
-/* API wrappers */
+/* API wrappers (cache) */
 async function apiCity(city, radius=DEFAULT_RADIUS){
   const key = `city:${city.toLowerCase()}:r${radius}`;
   if (apiCache.has(key)) return apiCache.get(key);
@@ -223,7 +175,7 @@ async function apiNear(lat, lon, radius=DEFAULT_RADIUS){
   return data;
 }
 
-/* MAP MOVE */
+/* MAP MOVE handler */
 async function onMapMove(){
   if (!map) return;
   const bounds = map.getBounds();
@@ -239,6 +191,7 @@ async function onMapMove(){
     applyFilters({ fuel: getActiveFuel(), quick: document.getElementById('quickFilter').value, sort: document.getElementById('sortPrice').value });
   } catch (err) {
     console.error('onMapMove error', err);
+    setError('Errore aggiornamento mappa');
   } finally {
     setLoading(false);
   }
@@ -255,12 +208,11 @@ function haversineKm(lat1, lon1, lat2, lon2){
 function showLocationBadge(label){ const el=document.getElementById('locationBadge'); if(!el) return; el.style.display='flex'; document.getElementById('locationLabel').textContent=label; }
 function clearLocationBadge(){ const el=document.getElementById('locationBadge'); if(el) el.style.display='none'; document.getElementById('cityInput').value=''; }
 function openMaps(lat, lon){ window.open(`https://www.google.com/maps?q=${lat},${lon}`, '_blank'); }
-function setError(msg){ document.getElementById('results').innerHTML = `<div class="station"><p class="meta">Errore: ${escapeHtml(msg)}</p></div>`; markerCluster.clearLayers(); }
+function setError(msg){ document.getElementById('results').innerHTML = `<div class="station"><p class="meta">Errore: ${escapeHtml(msg)}</p></div>`; if (markerCluster) markerCluster.clearLayers(); }
 function getActiveFuel(){ const a=document.querySelector('.chip.active'); return a? a.dataset.fuel : ''; }
 
 /* SEARCH / NEAR handlers */
 async function onSearchCity(){
-  if (challengeActive) { triggerChallenge('Conferma richiesta prima di continuare.'); return; }
   const raw = document.getElementById('cityInput').value; if(!raw.trim()) return;
   setLoading(true);
   try {
@@ -273,7 +225,6 @@ async function onSearchCity(){
   } catch (err){ console.error(err); setError('Ricerca fallita'); } finally { setLoading(false); }
 }
 async function onNearMe(){
-  if (challengeActive) { triggerChallenge('Conferma richiesta prima di continuare.'); return; }
   if (!navigator.geolocation){ alert('Geolocalizzazione non supportata'); return; }
   setLoading(true);
   navigator.geolocation.getCurrentPosition(async pos=>{
@@ -309,6 +260,10 @@ function initCityAutocomplete(){
     } catch (e) { suggestions.innerHTML=''; suggestions.setAttribute('aria-hidden','true'); }
   }, 140));
 
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); document.getElementById('searchCityBtn').click(); }
+  });
+
   function renderSuggestions(items){
     suggestions.innerHTML = '';
     if (!items || items.length === 0) { suggestions.setAttribute('aria-hidden','true'); return; }
@@ -318,7 +273,7 @@ function initCityAutocomplete(){
       btn.className = 'suggestion';
       btn.textContent = it.display_name.split(',')[0];
       btn.addEventListener('click', () => {
-        document.getElementById('cityInput').value = btn.textContent;
+        input.value = btn.textContent;
         suggestions.innerHTML=''; suggestions.setAttribute('aria-hidden','true');
         onSearchCity();
       });
@@ -328,7 +283,7 @@ function initCityAutocomplete(){
   }
 }
 
-/* EVENTS */
+/* EVENTS wiring (DOM ready) */
 function initEvents(){
   document.getElementById('searchCityBtn').addEventListener('click', ()=>onSearchCity());
   document.getElementById('nearMeBtn').addEventListener('click', ()=>onNearMe());
@@ -339,7 +294,7 @@ function initEvents(){
   document.getElementById('quickFilter').addEventListener('input', debounce(()=> applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value }), 180));
   document.getElementById('sortPrice').addEventListener('change', ()=> applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value }));
   document.getElementById('radius').addEventListener('input', e=> document.getElementById('radiusValue').textContent = `${e.target.value} km`);
-  document.getElementById('clearLocationBtn').addEventListener('click', ()=>{ clearLocationBadge(); currentStations=[]; applyFilters({}); });
+  document.getElementById('clearLocationBtn').addEventListener('click', ()=>{ clearLocationBadge(); document.getElementById('cityInput').value=''; currentStations=[]; applyFilters({}); });
   document.getElementById('openFilters').addEventListener('click', ()=> {
     const panelBtn = document.getElementById('openFilters'); const panel = document.getElementById('panelFilters');
     const expanded = panelBtn.getAttribute('aria-expanded') === 'true';
@@ -365,7 +320,7 @@ function initEvents(){
   io.observe(anchor);
 }
 
-/* INIT */
+/* INIT app */
 async function initApp(){
   if (localStorage.getItem('theme') === 'light') document.documentElement.classList.add('light');
   geocodeCache = loadGeocodeCache();
@@ -376,6 +331,6 @@ async function initApp(){
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js').catch(()=>{});
 }
 
-/* start */
+/* Expose helper */
 window.openMaps = openMaps;
-window.addEventListener('load', initApp);
+window.addEventListener('DOMContentLoaded', initApp);
