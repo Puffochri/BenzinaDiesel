@@ -1,5 +1,4 @@
-/* Service Worker: precache + runtime caching (tiles + api) */
-const SW_VER = 'sw-v1.2';
+const SW_VER = 'sw-v1.3';
 const PRECACHE = [
   '/', '/index.html', '/style.css', '/script.js', '/manifest.webmanifest',
   '/icons/icon-192.png', '/icons/icon-512.png'
@@ -23,25 +22,21 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
-  // API calls -> stale-while-revalidate
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(staleWhileRevalidate(event.request, API_CACHE));
     return;
   }
 
-  // Map tiles -> cache-first
   if (url.hostname.includes('tile.openstreetmap.org')) {
     event.respondWith(cacheFirst(event.request, TILE_CACHE));
     return;
   }
 
-  // Static assets -> cache-first
   if (PRECACHE.includes(url.pathname) || url.pathname.endsWith('.css') || url.pathname.endsWith('.js')) {
     event.respondWith(caches.match(event.request).then(r => r || fetch(event.request)));
     return;
   }
 
-  // Default network-first
   event.respondWith(fetch(event.request).catch(()=>caches.match(event.request)));
 });
 

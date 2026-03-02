@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Prezzi Carburanti — App</title>
+  <title>Prezzi Carburanti — PRO</title>
 
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="style.css">
@@ -34,8 +34,16 @@
 
   <main class="layout" role="main">
     <aside id="panelFilters" class="panel" aria-hidden="false">
+      <div id="locationBadge" class="location-badge" style="display:none" aria-live="polite">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" fill="currentColor"/>
+        </svg>
+        <span id="locationLabel" class="location-label"></span>
+        <button id="clearLocationBtn" class="btn-clear" aria-label="Rimuovi località">✕</button>
+      </div>
+
       <div class="search-row">
-        <input id="cityInput" type="search" placeholder="Cerca città, es. Parma" aria-label="Cerca città" autocomplete="off">
+        <input id="cityInput" type="search" placeholder="Cerca città, es. Parma" aria-label="Cerca città" autocomplete="off" />
         <button id="searchCityBtn" aria-label="Cerca">🔎</button>
       </div>
 
@@ -76,7 +84,7 @@
 
       <div class="toolbar">
         <input id="quickFilter" placeholder="Cerca nome o indirizzo" aria-label="Filtra risultati" />
-        <div class="pagination" id="pagination"></div>
+        <div class="pagination" id="pagination" aria-label="Paginazione risultati"></div>
       </div>
 
       <section id="results" class="results" aria-live="polite"></section>
