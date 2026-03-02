@@ -1,52 +1,83 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="it">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Prezzi Carburanti</title>
-
-  <link rel="stylesheet" href="style.css">
-
-  <!-- Leaflet Map -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Prezzi Carburanti — App</title>
 
   <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Optional: marker clustering (uncomment if desired) -->
+  <!--
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <script defer src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  -->
 </head>
 <body>
 
-<header>
-  <h1>Prezzi Carburanti</h1>
-  <button id="themeToggle">🌙</button>
-</header>
+  <header class="topbar">
+    <div class="brand">
+      <img src="icons/icon-48.png" alt="" class="logo">
+      <h1>Prezzi Carburanti</h1>
+    </div>
+    <div class="controls-top">
+      <button id="themeToggle" aria-label="Cambia tema">🌙</button>
+      <button id="openFilters" aria-expanded="false" aria-controls="panelFilters">Filtri ▾</button>
+    </div>
+  </header>
 
-<section id="controls">
-  <input id="cityInput" type="text" placeholder="Cerca città (es. Parma)">
-  <button id="searchCityBtn">Cerca</button>
-  <button id="nearMeBtn">Vicino a me</button>
+  <main class="layout">
+    <aside id="panelFilters" class="panel" aria-hidden="false">
+      <div class="search-row">
+        <input id="cityInput" type="search" placeholder="Cerca città (es. Parma)" aria-label="Cerca città">
+        <button id="searchCityBtn">Cerca</button>
+      </div>
 
-  <select id="fuelFilter">
-    <option value="">Tutti i carburanti</option>
-    <option value="Benzina">Benzina</option>
-    <option value="Gasolio">Gasolio</option>
-    <option value="GPL">GPL</option>
-    <option value="Metano">Metano</option>
-    <option value="Blue Diesel">Blue Diesel</option>
-    <option value="HVO">HVO</option>
-  </select>
+      <div class="row">
+        <button id="nearMeBtn" class="btn-ghost">Vicino a me</button>
+      </div>
 
-  <select id="sortPrice">
-    <option value="">Ordina</option>
-    <option value="asc">Prezzo crescente</option>
-    <option value="desc">Prezzo decrescente</option>
-  </select>
-</section>
+      <label class="label">Carburante</label>
+      <select id="fuelFilter" aria-label="Filtra per carburante">
+        <option value="">Tutti</option>
+        <option value="Benzina">Benzina</option>
+        <option value="Gasolio">Gasolio</option>
+        <option value="GPL">GPL</option>
+        <option value="Metano">Metano</option>
+        <option value="Blue Diesel">Blue Diesel</option>
+        <option value="HVO">HVO</option>
+      </select>
 
-<div id="map"></div>
+      <label class="label">Ordina per</label>
+      <select id="sortPrice" aria-label="Ordina per prezzo">
+        <option value="">Distanza (default)</option>
+        <option value="price-asc">Prezzo ↑</option>
+        <option value="price-desc">Prezzo ↓</option>
+      </select>
 
-<section id="results"></section>
+      <label class="label">Raggio (km)</label>
+      <input id="radius" type="range" min="1" max="50" value="10" />
+      <div class="range-value"><span id="radiusValue">10</span> km</div>
 
-<script src="script.js"></script>
+      <div class="small-note">Risultati aggiornati dal dataset ufficiale MIMIT. Cache locale 24h.</div>
+    </aside>
 
+    <section class="map-column">
+      <div id="map" class="map" role="application" aria-label="Mappa distributori"></div>
+      <div id="results" class="results" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <small>Powered by MIMIT • Worker proxy • Aggiornato automaticamente</small>
+  </footer>
+
+  <script defer src="script.js"></script>
 </body>
 </html>
