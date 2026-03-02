@@ -1,4 +1,4 @@
-const SW_VER = 'sw-v1.4';
+const SW_VER = 'sw-v2.0';
 const PRECACHE = [
   '/', '/index.html', '/style.css', '/script.js', '/manifest.webmanifest',
   '/icons/icon-192.png', '/icons/icon-512.png'

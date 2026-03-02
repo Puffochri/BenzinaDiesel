@@ -1,4 +1,4 @@
-/* PRO ULTRA: script.js completo, senza autenticazioni social, con mappa dinamica, ricerca avanzata, caching e UX rifinita */
+/* PRO ULTRA: script.js ottimizzato — ricerca veloce, animazioni, caching, map-move updates */
 
 /* CONFIG */
 const API_BASE = "https://benzinaprezzidiesel.christianritucci04.workers.dev/api";
@@ -6,8 +6,10 @@ const DEFAULT_RADIUS = 10;
 const PAGE_SIZE = 12;
 const MAP_DEFAULT = { lat:44.8015, lon:10.3280, zoom:12 };
 
-/* STATO */
+/* STATE */
 let map, markerCluster, currentStations = [], filteredStations = [], currentPage = 1;
+const apiCache = new Map(); // in-memory cache for session
+const geocodeCacheKey = 'gc_cache_v1'; // localStorage cache key
 
 /* UTIL */
 function debounce(fn, wait=300){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); }; }
@@ -23,6 +25,10 @@ async function fetchJson(url, opts={}, timeout=12000){
 }
 function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+/* CACHING: simple localStorage geocode cache */
+function loadGeocodeCache(){ try { return JSON.parse(localStorage.getItem(geocodeCacheKey) || '{}'); } catch { return {}; } }
+function saveGeocodeCache(obj){ try { localStorage.setItem(geocodeCacheKey, JSON.stringify(obj)); } catch {} }
+
 /* MAP */
 function initMap(lat=MAP_DEFAULT.lat, lon=MAP_DEFAULT.lon, zoom=MAP_DEFAULT.zoom){
   if (!map){
@@ -30,23 +36,23 @@ function initMap(lat=MAP_DEFAULT.lat, lon=MAP_DEFAULT.lon, zoom=MAP_DEFAULT.zoom
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OpenStreetMap' }).addTo(map);
     markerCluster = L.markerClusterGroup({ chunkedLoading:true, maxClusterRadius:50 });
     map.addLayer(markerCluster);
-    map.on('moveend', debounce(onMapMove, 400));
+    map.on('moveend', debounce(onMapMove, 350));
   } else map.setView([lat, lon], zoom);
 }
 function createSvgIcon(fuel){
   const color = (fuel||'').toLowerCase().includes('benzina') ? '#ff6b6b'
-    : (fuel||'').toLowerCase().includes('gasolio') ? '#0b84ff'
+    : (fuel||'').toLowerCase().includes('gasolio') ? '#00d4ff'
     : (fuel||'').toLowerCase().includes('gpl') ? '#f59e0b'
-    : '#6b7280';
-  const svg = encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='36' height='36' viewBox='0 0 24 24'><path fill='${color}' d='M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z'/><circle cx='12' cy='9' r='2.2' fill='#fff'/></svg>`);
-  return L.icon({ iconUrl: `data:image/svg+xml;charset=utf-8,${svg}`, iconSize:[36,36], iconAnchor:[18,36], popupAnchor:[0,-36] });
+    : '#9aa4b2';
+  const svg = encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='44' height='44' viewBox='0 0 24 24'><path fill='${color}' d='M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z'/><circle cx='12' cy='9' r='2.2' fill='#fff'/></svg>`);
+  return L.icon({ iconUrl: `data:image/svg+xml;charset=utf-8,${svg}`, iconSize:[44,44], iconAnchor:[22,44], popupAnchor:[0,-44] });
 }
 function addMarker(st){
   if (!st.lat || !st.lon) return;
   const icon = createSvgIcon(st.carburante);
   const price = st.prezzo != null ? `€ ${st.prezzo.toFixed(3)}` : '—';
-  const html = `<div style="min-width:200px"><strong>${escapeHtml(st.nome)}</strong><br/><small class="meta">${escapeHtml(st.indirizzo||'')} — ${escapeHtml(st.comune||'')}</small><div style="margin-top:8px"><strong>${escapeHtml(st.carburante)}</strong>: <span style="color:var(--accent-1)">${price}</span></div><div style="margin-top:8px"><a target="_blank" rel="noopener" href="https://www.google.com/maps?q=${st.lat},${st.lon}">Apri in Maps</a></div></div>`;
-  const m = L.marker([st.lat, st.lon], { icon }).bindPopup(html);
+  const html = `<div style="min-width:220px"><strong>${escapeHtml(st.nome)}</strong><br/><small class="meta">${escapeHtml(st.indirizzo||'')} — ${escapeHtml(st.comune||'')}</small><div style="margin-top:8px"><strong>${escapeHtml(st.carburante)}</strong>: <span style="color:var(--accent-1)">${price}</span></div><div style="margin-top:8px"><a target="_blank" rel="noopener" href="https://www.google.com/maps?q=${st.lat},${st.lon}">Apri in Maps</a></div></div>`;
+  const m = L.marker([st.lat, st.lon], { icon }).bindPopup(html, { minWidth: 220 });
   markerCluster.addLayer(m);
 }
 
@@ -54,7 +60,7 @@ function addMarker(st){
 function setLoading(on){
   const results = document.getElementById('results');
   if (on){
-    results.innerHTML = Array.from({length:6}).map(()=>`<div class="station"><div class="skeleton" style="height:14px;width:60%;margin-bottom:8px"></div><div class="skeleton" style="height:12px;width:40%"></div></div>`).join('');
+    results.innerHTML = Array.from({length:6}).map(()=>`<div class="station skeleton" style="height:72px"></div>`).join('');
     markerCluster.clearLayers();
   }
 }
@@ -68,11 +74,13 @@ function renderStationsPage(page=1){
   markerCluster.clearLayers();
   pageItems.forEach(s => addMarker(s));
   if (pageItems[0] && pageItems[0].lat && pageItems[0].lon) map.flyTo([pageItems[0].lat, pageItems[0].lon], 13, { duration:0.7 });
-  pageItems.forEach(s=>{
+  pageItems.forEach((s, idx) => {
     const card = document.createElement('article'); card.className='station';
     const price = s.prezzo!=null?`€ ${s.prezzo.toFixed(3)}`:'—';
     card.innerHTML = `<div><h3>${escapeHtml(s.nome)}</h3><div class="meta">${escapeHtml(s.indirizzo||'')} — ${escapeHtml(s.comune||'')}</div></div><div class="actions"><div class="price">${price}</div><div class="meta">${s.distanza!=null? s.distanza.toFixed(2)+' km':''}</div><div style="margin-top:8px"><button onclick="openMaps(${s.lat},${s.lon})">Naviga</button></div></div>`;
     container.appendChild(card);
+    // stagger reveal
+    requestAnimationFrame(()=> setTimeout(()=> card.classList.add('visible'), idx * 40));
   });
   renderPagination(Math.ceil(filteredStations.length/PAGE_SIZE), page);
 }
@@ -98,10 +106,13 @@ function applyFilters({ fuel='', quick='', sort='distance' } = {}){
   filteredStations = list; renderStationsPage(1);
 }
 
-/* GEOCODING / REVERSE (enhanced) */
+/* GEOCODING / REVERSE (with local cache) */
 async function reverseGeocodeEnhanced(lat, lon){
-  const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&accept-language=it`;
+  const cache = loadGeocodeCache();
+  const key = `${lat.toFixed(5)},${lon.toFixed(5)}`;
+  if (cache[key]) return cache[key];
   try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&accept-language=it`;
     const res = await fetch(url, { headers:{ 'User-Agent':'PrezziCarburantiApp/1.0' }});
     if (!res.ok) throw new Error('Reverse failed');
     const j = await res.json(); const addr = j.address||{};
@@ -119,13 +130,27 @@ async function reverseGeocodeEnhanced(lat, lon){
       if (place && municipality && !place.toLowerCase().includes(municipality.toLowerCase())) label = `${place}${municipality? ' di ' + municipality : ''}`;
     }
     label = String(label||'').replace(/\s+,/g,',').replace(/\s{2,}/g,' ').trim();
-    return { label, place, municipality, county, raw:j };
+    const out = { label, place, municipality, county, raw:j };
+    cache[key] = out; saveGeocodeCache(cache);
+    return out;
   } catch (err){ return null; }
 }
 
-/* API wrappers */
-async function apiCity(city, radius=DEFAULT_RADIUS){ return fetchJson(`${API_BASE}/city/${encodeURIComponent(city)}?radius=${radius}`); }
-async function apiNear(lat, lon, radius=DEFAULT_RADIUS){ return fetchJson(`${API_BASE}/near?lat=${lat}&lon=${lon}&radius=${radius}`); }
+/* API wrappers with simple in-memory caching */
+async function apiCity(city, radius=DEFAULT_RADIUS){
+  const key = `city:${city.toLowerCase()}:r${radius}`;
+  if (apiCache.has(key)) return apiCache.get(key);
+  const data = await fetchJson(`${API_BASE}/city/${encodeURIComponent(city)}?radius=${radius}`);
+  apiCache.set(key, data);
+  return data;
+}
+async function apiNear(lat, lon, radius=DEFAULT_RADIUS){
+  const key = `near:${lat.toFixed(4)}:${lon.toFixed(4)}:r${Math.round(radius)}`;
+  if (apiCache.has(key)) return apiCache.get(key);
+  const data = await fetchJson(`${API_BASE}/near?lat=${lat}&lon=${lon}&radius=${radius}`);
+  apiCache.set(key, data);
+  return data;
+}
 
 /* MAP MOVE: aggiorna lista in base alla vista */
 async function onMapMove(){
@@ -194,7 +219,44 @@ async function onNearMe(){
   }, err=>{ setLoading(false); alert('Permesso geolocalizzazione negato o errore'); }, { timeout:12000, maximumAge:60000 });
 }
 
-/* EVENTS */
+/* Autocomplete lightweight with cache */
+function initCityAutocomplete(){
+  const input = document.getElementById('cityInput');
+  const suggestions = document.getElementById('suggestions');
+  const cache = {};
+  input.addEventListener('input', debounce(async () => {
+    const q = input.value.trim();
+    if (!q || q.length < 2) { suggestions.innerHTML=''; suggestions.setAttribute('aria-hidden','true'); return; }
+    if (cache[q]) return renderSuggestions(cache[q]);
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&q=${encodeURIComponent(q + ', Italia')}`;
+      const res = await fetch(url, { headers: { 'User-Agent': 'PrezziCarburantiApp/1.0' }});
+      const items = await res.json();
+      cache[q] = items;
+      renderSuggestions(items);
+    } catch (e) { suggestions.innerHTML=''; suggestions.setAttribute('aria-hidden','true'); }
+  }, 180));
+
+  function renderSuggestions(items){
+    suggestions.innerHTML = '';
+    if (!items || items.length === 0) { suggestions.setAttribute('aria-hidden','true'); return; }
+    items.forEach(it => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'suggestion';
+      btn.textContent = it.display_name.split(',')[0];
+      btn.addEventListener('click', () => {
+        input.value = btn.textContent;
+        suggestions.innerHTML=''; suggestions.setAttribute('aria-hidden','true');
+        onSearchCity();
+      });
+      suggestions.appendChild(btn);
+    });
+    suggestions.setAttribute('aria-hidden','false');
+  }
+}
+
+/* INIT events */
 function initEvents(){
   document.getElementById('searchCityBtn').addEventListener('click', ()=>onSearchCity());
   document.getElementById('nearMeBtn').addEventListener('click', ()=>onNearMe());
@@ -202,7 +264,7 @@ function initEvents(){
     document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active')); ch.classList.add('active');
     applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value });
   }));
-  document.getElementById('quickFilter').addEventListener('input', debounce(()=> applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value }), 250));
+  document.getElementById('quickFilter').addEventListener('input', debounce(()=> applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value }), 200));
   document.getElementById('sortPrice').addEventListener('change', ()=> applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value }));
   document.getElementById('radius').addEventListener('input', e=> document.getElementById('radiusValue').textContent = `${e.target.value} km`);
   document.getElementById('clearLocationBtn').addEventListener('click', ()=>{ clearLocationBadge(); currentStations=[]; applyFilters({}); });
@@ -213,65 +275,32 @@ function initEvents(){
     panel.style.display = expanded ? 'none' : 'block';
   });
   document.getElementById('themeToggle').addEventListener('click', ()=> {
-    const isDark = document.body.classList.toggle('dark');
-    localStorage.setItem('theme', isDark ? 'dark' : 'light');
-    document.getElementById('themeToggle').setAttribute('aria-pressed', String(isDark));
+    const isLight = document.documentElement.classList.toggle('light');
+    localStorage.setItem('theme', isLight ? 'light' : 'dark');
+    document.getElementById('themeToggle').setAttribute('aria-pressed', String(isLight));
   });
 }
 
 /* INIT */
 async function initApp(){
   // theme persist
-  if (localStorage.getItem('theme') === 'dark') document.body.classList.add('dark');
+  if (localStorage.getItem('theme') === 'light') document.documentElement.classList.add('light');
 
   initMap();
   initEvents();
+  initCityAutocomplete();
 
-  // initial load: Parma (fast)
+  // initial load: Parma
   try { setLoading(true); currentStations = await apiCity('Parma', DEFAULT_RADIUS); applyFilters({}); } catch(e){} finally { setLoading(false); }
 
-  // progressive enhancement: autocomplete city suggestions (lightweight)
-  initCityAutocomplete();
+  // register service worker
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js').catch(()=>{});
 }
 
-/* Autocomplete (lightweight, client-side using Nominatim search) */
-function initCityAutocomplete(){
-  const input = document.getElementById('cityInput');
-  let listEl;
-  input.addEventListener('input', debounce(async () => {
-    const q = input.value.trim();
-    if (!q || q.length < 2) { removeSuggestionList(); return; }
-    try {
-      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&q=${encodeURIComponent(q + ', Italia')}`;
-      const res = await fetch(url, { headers: { 'User-Agent': 'PrezziCarburantiApp/1.0' }});
-      const items = await res.json();
-      showSuggestions(items);
-    } catch (e) { removeSuggestionList(); }
-  }, 220));
+/* helpers for geocode cache */
+function loadGeocodeCache(){ try { return JSON.parse(localStorage.getItem(geocodeCacheKey) || '{}'); } catch { return {}; } }
+function saveGeocodeCache(obj){ try { localStorage.setItem(geocodeCacheKey, JSON.stringify(obj)); } catch {} }
 
-  function showSuggestions(items){
-    removeSuggestionList();
-    if (!items || items.length === 0) return;
-    listEl = document.createElement('div'); listEl.className = 'suggestions';
-    listEl.style.position = 'absolute'; listEl.style.zIndex = 9999; listEl.style.width = input.offsetWidth + 'px';
-    items.forEach(it => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'suggestion';
-      btn.textContent = it.display_name.split(',')[0];
-      btn.addEventListener('click', () => {
-        input.value = btn.textContent;
-        removeSuggestionList();
-        document.getElementById('searchCityBtn').click();
-      });
-      listEl.appendChild(btn);
-    });
-    input.parentNode.appendChild(listEl);
-  }
-  function removeSuggestionList(){ if (listEl && listEl.parentNode) listEl.parentNode.removeChild(listEl); listEl = null; }
-}
-
-/* Start */
+/* expose */
 window.openMaps = openMaps;
 window.addEventListener('load', initApp);
