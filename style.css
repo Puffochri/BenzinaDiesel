@@ -1,92 +1,70 @@
 :root {
-  --primary: #0d6efd;
-  --primary-dark: #0b5ed7;
-  --bg: #f5f5f7;
-  --card-bg: #ffffff;
+  --bg: #f5f5f5;
   --text: #222;
-  --muted: #666;
-  --border: #ddd;
+  --card: #fff;
+  --primary: #0077ff;
+}
+
+body.dark {
+  --bg: #1e1e1e;
+  --text: #eee;
+  --card: #2a2a2a;
+  --primary: #4da3ff;
 }
 
 body {
   margin: 0;
-  font-family: system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
+  font-family: Arial, sans-serif;
+  transition: background 0.3s, color 0.3s;
 }
 
 header {
   background: var(--primary);
-  color: #fff;
-  padding: 1.2rem 1rem;
-  text-align: center;
-}
-
-main {
-  padding: 1rem;
-  max-width: 900px;
-  margin: auto;
-}
-
-.controls {
-  background: var(--card-bg);
-  border-radius: 0.75rem;
-  padding: 1rem;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.06);
-  display: grid;
-  gap: 0.75rem;
-}
-
-.control-group {
+  color: white;
+  padding: 15px;
   display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
+  justify-content: space-between;
+  align-items: center;
 }
 
-input, select, button {
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.5rem;
-  border: 1px solid var(--border);
-  font-size: 0.95rem;
+#controls {
+  padding: 10px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
-button {
+#controls input, #controls select, #controls button {
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+}
+
+#controls button {
   background: var(--primary);
-  color: #fff;
+  color: white;
   border: none;
   cursor: pointer;
 }
 
-button:hover {
-  background: var(--primary-dark);
+#map {
+  height: 300px;
+  margin: 10px;
+  border-radius: 10px;
 }
 
-.results {
-  margin-top: 1rem;
-  display: grid;
-  gap: 0.75rem;
+.station {
+  background: var(--card);
+  padding: 15px;
+  margin: 10px;
+  border-radius: 10px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+  transition: transform 0.2s;
 }
 
-.station-card {
-  background: var(--card-bg);
-  border-radius: 0.75rem;
-  padding: 0.75rem 0.9rem;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
-}
-
-.station-header {
-  display: flex;
-  justify-content: space-between;
-}
-
-.station-prices {
-  margin-top: 0.4rem;
-  display: flex;
-  gap: 1rem;
-}
-
-.price-pill {
-  padding: 0.25rem 0.6rem;
-  border-radius: 999px;
-  background: #f1f3f5;
+.station:hover {
+  transform: scale(1.02);
 }

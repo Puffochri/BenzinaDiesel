@@ -1,66 +1,52 @@
 <!DOCTYPE html>
 <html lang="it">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Prezzi Carburante Vicino a Te</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prezzi Carburanti</title>
 
-  <link rel="manifest" href="manifest.webmanifest" />
-  <meta name="theme-color" content="#0d6efd" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css">
+
+  <!-- Leaflet Map -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <link rel="manifest" href="manifest.webmanifest">
 </head>
 <body>
-  <header>
-    <h1>Prezzi carburante</h1>
-    <p>Trova benzina e diesel più economici vicino a te.</p>
-  </header>
 
-  <main>
-    <section class="controls">
-      <div class="control-group">
-        <label for="citySelect"><strong>Seleziona città</strong></label>
-        <input id="citySelect" type="text" placeholder="Es. Parma, Reggio Emilia, Roma..." />
-        <button id="searchByCityBtn">Cerca per città</button>
-      </div>
+<header>
+  <h1>Prezzi Carburanti</h1>
+  <button id="themeToggle">🌙</button>
+</header>
 
-      <div class="divider">oppure</div>
+<section id="controls">
+  <input id="cityInput" type="text" placeholder="Cerca città (es. Parma)">
+  <button id="searchCityBtn">Cerca</button>
+  <button id="nearMeBtn">Vicino a me</button>
 
-      <div class="control-group">
-        <button id="useLocationBtn">Usa la mia posizione</button>
-        <p class="hint">Richiederà il permesso di geolocalizzazione.</p>
-      </div>
+  <select id="fuelFilter">
+    <option value="">Tutti i carburanti</option>
+    <option value="Benzina">Benzina</option>
+    <option value="Gasolio">Gasolio</option>
+    <option value="GPL">GPL</option>
+    <option value="Metano">Metano</option>
+    <option value="Blue Diesel">Blue Diesel</option>
+    <option value="HVO">HVO</option>
+  </select>
 
-      <div class="control-group">
-        <label for="fuelType"><strong>Tipo di carburante</strong></label>
-        <select id="fuelType">
-          <option value="all">Tutti</option>
-          <option value="benzina">Benzina</option>
-          <option value="diesel">Diesel</option>
-        </select>
-      </div>
+  <select id="sortPrice">
+    <option value="">Ordina</option>
+    <option value="asc">Prezzo crescente</option>
+    <option value="desc">Prezzo decrescente</option>
+  </select>
+</section>
 
-      <div class="control-group">
-        <label for="sortBy"><strong>Ordina per</strong></label>
-        <select id="sortBy">
-          <option value="distance">Distanza</option>
-          <option value="price">Prezzo</option>
-        </select>
-      </div>
-    </section>
+<div id="map"></div>
 
-    <section id="status" class="status">Pronto per la ricerca.</section>
-    <section id="results" class="results"></section>
-  </main>
+<section id="results"></section>
 
-  <footer>
-    <small>PWA carburanti – dati da carburanti.madbob.org</small>
-  </footer>
+<script src="script.js"></script>
 
-  <script src="script.js"></script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js');
-    }
-  </script>
 </body>
 </html>
