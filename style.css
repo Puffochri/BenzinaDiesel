@@ -65,6 +65,12 @@ body{
 .skeleton{background:linear-gradient(90deg,#eee #f5f5f5 #eee);background-size:200% 100%;animation:shimmer 1.2s linear infinite;border-radius:8px}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 
+/* Modal & small UI */
+.modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(2,6,23,0.45);z-index:9999;opacity:0;pointer-events:none;transition:opacity .18s}
+.modal[aria-hidden="false"]{opacity:1;pointer-events:auto}
+.modal-content{background:var(--panel);padding:18px;border-radius:12px;min-width:320px;max-width:420px;box-shadow:var(--shadow)}
+.modal-close{position:absolute;right:18px;top:18px;border:none;background:transparent;font-size:18px;cursor:pointer}
+
 /* Buttons */
 button{font-family:inherit}
 .station button{padding:8px 10px;border-radius:10px;border:none;background:var(--accent-1);color:white;cursor:pointer}

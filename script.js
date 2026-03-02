@@ -1,4 +1,4 @@
-/* App PRO: map, clustering, autocomplete, reverse enhanced, filters, pagination, animations */
+/* PRO ULTRA: script.js completo, senza autenticazioni social, con mappa dinamica, ricerca avanzata, caching e UX rifinita */
 
 /* CONFIG */
 const API_BASE = "https://benzinaprezzidiesel.christianritucci04.workers.dev/api";
@@ -6,7 +6,7 @@ const DEFAULT_RADIUS = 10;
 const PAGE_SIZE = 12;
 const MAP_DEFAULT = { lat:44.8015, lon:10.3280, zoom:12 };
 
-/* STATE */
+/* STATO */
 let map, markerCluster, currentStations = [], filteredStations = [], currentPage = 1;
 
 /* UTIL */
@@ -30,6 +30,7 @@ function initMap(lat=MAP_DEFAULT.lat, lon=MAP_DEFAULT.lon, zoom=MAP_DEFAULT.zoom
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OpenStreetMap' }).addTo(map);
     markerCluster = L.markerClusterGroup({ chunkedLoading:true, maxClusterRadius:50 });
     map.addLayer(markerCluster);
+    map.on('moveend', debounce(onMapMove, 400));
   } else map.setView([lat, lon], zoom);
 }
 function createSvgIcon(fuel){
@@ -97,7 +98,7 @@ function applyFilters({ fuel='', quick='', sort='distance' } = {}){
   filteredStations = list; renderStationsPage(1);
 }
 
-/* REVERSE GEOCODING ENHANCED */
+/* GEOCODING / REVERSE (enhanced) */
 async function reverseGeocodeEnhanced(lat, lon){
   const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&accept-language=it`;
   try {
@@ -126,12 +127,42 @@ async function reverseGeocodeEnhanced(lat, lon){
 async function apiCity(city, radius=DEFAULT_RADIUS){ return fetchJson(`${API_BASE}/city/${encodeURIComponent(city)}?radius=${radius}`); }
 async function apiNear(lat, lon, radius=DEFAULT_RADIUS){ return fetchJson(`${API_BASE}/near?lat=${lat}&lon=${lon}&radius=${radius}`); }
 
+/* MAP MOVE: aggiorna lista in base alla vista */
+async function onMapMove(){
+  if (!map) return;
+  const bounds = map.getBounds();
+  const center = bounds.getCenter();
+  const ne = bounds.getNorthEast();
+  const sw = bounds.getSouthWest();
+  const radiusKm = haversineKm(ne.lat, ne.lng, sw.lat, sw.lng) / 2;
+  const radius = Math.min(Math.max(radiusKm, 1), 100);
+  setLoading(true);
+  try {
+    const data = await apiNear(center.lat, center.lng, radius);
+    currentStations = data || [];
+    applyFilters({ fuel: getActiveFuel(), quick: document.getElementById('quickFilter').value, sort: document.getElementById('sortPrice').value });
+  } catch (err) {
+    console.error('onMapMove error', err);
+  } finally {
+    setLoading(false);
+  }
+}
+function haversineKm(lat1, lon1, lat2, lon2){
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
 /* UI actions */
 function showLocationBadge(label){ const el=document.getElementById('locationBadge'); if(!el) return; el.style.display='flex'; document.getElementById('locationLabel').textContent=label; }
 function clearLocationBadge(){ const el=document.getElementById('locationBadge'); if(el) el.style.display='none'; document.getElementById('cityInput').value=''; }
 function openMaps(lat, lon){ window.open(`https://www.google.com/maps?q=${lat},${lon}`, '_blank'); }
 function setError(msg){ document.getElementById('results').innerHTML = `<div class="station"><p class="meta">Errore: ${escapeHtml(msg)}</p></div>`; markerCluster.clearLayers(); }
+function getActiveFuel(){ const a=document.querySelector('.chip.active'); return a? a.dataset.fuel : ''; }
 
+/* SEARCH / NEAR handlers */
 async function onSearchCity(){
   const raw = document.getElementById('cityInput').value; if(!raw.trim()) return;
   setLoading(true);
@@ -139,7 +170,10 @@ async function onSearchCity(){
     const radius = Number(document.getElementById('radius').value) || DEFAULT_RADIUS;
     currentStations = await apiCity(raw, radius);
     applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value });
-  } catch (err){ setError(err.message || err); } finally { setLoading(false); }
+    if (currentStations && currentStations.length>0 && currentStations[0].lat && currentStations[0].lon) {
+      map.flyTo([currentStations[0].lat, currentStations[0].lon], 12, { duration: 0.8 });
+    }
+  } catch (err){ console.error(err); setError('Ricerca fallita'); } finally { setLoading(false); }
 }
 
 async function onNearMe(){
@@ -156,14 +190,11 @@ async function onNearMe(){
       const radius = Number(document.getElementById('radius').value) || DEFAULT_RADIUS;
       try { currentStations = await apiCity(label, radius); } catch(e){ currentStations = await apiNear(lat, lon, radius); }
       applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value });
-    } catch (err){ setError(err.message || err); } finally { setLoading(false); }
+    } catch (err){ console.error(err); setError('Errore posizione'); } finally { setLoading(false); }
   }, err=>{ setLoading(false); alert('Permesso geolocalizzazione negato o errore'); }, { timeout:12000, maximumAge:60000 });
 }
 
-/* Helpers */
-function getActiveFuel(){ const a=document.querySelector('.chip.active'); return a? a.dataset.fuel : ''; }
-
-/* Init events */
+/* EVENTS */
 function initEvents(){
   document.getElementById('searchCityBtn').addEventListener('click', ()=>onSearchCity());
   document.getElementById('nearMeBtn').addEventListener('click', ()=>onNearMe());
@@ -175,18 +206,72 @@ function initEvents(){
   document.getElementById('sortPrice').addEventListener('change', ()=> applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value }));
   document.getElementById('radius').addEventListener('input', e=> document.getElementById('radiusValue').textContent = `${e.target.value} km`);
   document.getElementById('clearLocationBtn').addEventListener('click', ()=>{ clearLocationBadge(); currentStations=[]; applyFilters({}); });
-  const themeBtn = document.getElementById('themeToggle'); if(localStorage.getItem('theme')==='dark') document.body.classList.add('dark');
-  themeBtn.addEventListener('click', ()=>{ const isDark = document.body.classList.toggle('dark'); localStorage.setItem('theme', isDark?'dark':'light'); themeBtn.setAttribute('aria-pressed', String(isDark)); });
-  const panelBtn = document.getElementById('openFilters'); const panel = document.getElementById('panelFilters');
-  panelBtn.addEventListener('click', ()=>{ const expanded = panelBtn.getAttribute('aria-expanded')==='true'; panelBtn.setAttribute('aria-expanded', String(!expanded)); panel.style.display = expanded ? 'none' : 'block'; });
+  document.getElementById('openFilters').addEventListener('click', ()=> {
+    const panelBtn = document.getElementById('openFilters'); const panel = document.getElementById('panelFilters');
+    const expanded = panelBtn.getAttribute('aria-expanded') === 'true';
+    panelBtn.setAttribute('aria-expanded', String(!expanded));
+    panel.style.display = expanded ? 'none' : 'block';
+  });
+  document.getElementById('themeToggle').addEventListener('click', ()=> {
+    const isDark = document.body.classList.toggle('dark');
+    localStorage.setItem('theme', isDark ? 'dark' : 'light');
+    document.getElementById('themeToggle').setAttribute('aria-pressed', String(isDark));
+  });
 }
 
-/* Init */
+/* INIT */
 async function initApp(){
+  // theme persist
+  if (localStorage.getItem('theme') === 'dark') document.body.classList.add('dark');
+
   initMap();
   initEvents();
+
+  // initial load: Parma (fast)
   try { setLoading(true); currentStations = await apiCity('Parma', DEFAULT_RADIUS); applyFilters({}); } catch(e){} finally { setLoading(false); }
+
+  // progressive enhancement: autocomplete city suggestions (lightweight)
+  initCityAutocomplete();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js').catch(()=>{});
 }
+
+/* Autocomplete (lightweight, client-side using Nominatim search) */
+function initCityAutocomplete(){
+  const input = document.getElementById('cityInput');
+  let listEl;
+  input.addEventListener('input', debounce(async () => {
+    const q = input.value.trim();
+    if (!q || q.length < 2) { removeSuggestionList(); return; }
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&q=${encodeURIComponent(q + ', Italia')}`;
+      const res = await fetch(url, { headers: { 'User-Agent': 'PrezziCarburantiApp/1.0' }});
+      const items = await res.json();
+      showSuggestions(items);
+    } catch (e) { removeSuggestionList(); }
+  }, 220));
+
+  function showSuggestions(items){
+    removeSuggestionList();
+    if (!items || items.length === 0) return;
+    listEl = document.createElement('div'); listEl.className = 'suggestions';
+    listEl.style.position = 'absolute'; listEl.style.zIndex = 9999; listEl.style.width = input.offsetWidth + 'px';
+    items.forEach(it => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'suggestion';
+      btn.textContent = it.display_name.split(',')[0];
+      btn.addEventListener('click', () => {
+        input.value = btn.textContent;
+        removeSuggestionList();
+        document.getElementById('searchCityBtn').click();
+      });
+      listEl.appendChild(btn);
+    });
+    input.parentNode.appendChild(listEl);
+  }
+  function removeSuggestionList(){ if (listEl && listEl.parentNode) listEl.parentNode.removeChild(listEl); listEl = null; }
+}
+
+/* Start */
 window.openMaps = openMaps;
 window.addEventListener('load', initApp);
