@@ -1,4 +1,9 @@
-/* PRO ULTRA: script.js ottimizzato — ricerca veloce, animazioni, caching, map-move updates */
+/* PRO SAFE script.js
+   - Nessuna autenticazione
+   - Protezioni anti-abuso client-side: token bucket, debounce, backoff, challenge
+   - Caching in-memory + localStorage, fetch cancellabili
+   - Map move updates, autocomplete, infinite scroll
+*/
 
 /* CONFIG */
 const API_BASE = "https://benzinaprezzidiesel.christianritucci04.workers.dev/api";
@@ -8,24 +13,93 @@ const MAP_DEFAULT = { lat:44.8015, lon:10.3280, zoom:12 };
 
 /* STATE */
 let map, markerCluster, currentStations = [], filteredStations = [], currentPage = 1;
-const apiCache = new Map(); // in-memory cache for session
-const geocodeCacheKey = 'gc_cache_v1'; // localStorage cache key
+let lastFetchController = null;
+const apiCache = new Map();
+const geocodeCacheKey = 'gc_cache_safe_v1';
+let geocodeCache = loadGeocodeCache();
 
-/* UTIL */
-function debounce(fn, wait=300){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); }; }
+/* CLIENT RATE LIMIT (token bucket) */
+const bucket = {
+  capacity: 8,
+  tokens: 8,
+  refillRatePerSec: 1.5,
+  lastRefill: Date.now()
+};
+function refillBucket(){
+  const now = Date.now();
+  const elapsed = (now - bucket.lastRefill) / 1000;
+  const add = elapsed * bucket.refillRatePerSec;
+  if (add > 0){
+    bucket.tokens = Math.min(bucket.capacity, bucket.tokens + add);
+    bucket.lastRefill = now;
+  }
+}
+function consumeToken(){
+  refillBucket();
+  if (bucket.tokens >= 1){ bucket.tokens -= 1; return true; }
+  return false;
+}
+
+/* ABUSE DETECTION */
+let abuseCounter = 0;
+let lastMapMoveTime = 0;
+function recordMapMove(){
+  const now = Date.now();
+  if (now - lastMapMoveTime < 600) abuseCounter++;
+  else abuseCounter = Math.max(0, abuseCounter - 1);
+  lastMapMoveTime = now;
+  if (abuseCounter >= 6) triggerChallenge('Movimenti mappa troppo rapidi rilevati. Premi qui per confermare e continuare.');
+}
+
+/* CHALLENGE */
+let challengeActive = false;
+function triggerChallenge(message){
+  if (challengeActive) return;
+  challengeActive = true;
+  const notice = document.getElementById('abuseNotice');
+  notice.textContent = message;
+  notice.classList.add('show');
+  notice.setAttribute('aria-hidden','false');
+  notice.onclick = () => {
+    challengeActive = false;
+    abuseCounter = 0;
+    notice.classList.remove('show');
+    notice.setAttribute('aria-hidden','true');
+    notice.onclick = null;
+    bucket.tokens = bucket.capacity;
+    bucket.lastRefill = Date.now();
+  };
+}
+
+/* FETCH wrapper with AbortController and backoff handling */
 async function fetchJson(url, opts={}, timeout=12000){
+  if (!consumeToken()){
+    triggerChallenge('Troppe richieste in breve. Premi la notifica per confermare.');
+    throw new Error('Rate limit client-side attivato');
+  }
+  if (lastFetchController) { try { lastFetchController.abort(); } catch{} lastFetchController = null; }
   const controller = new AbortController();
+  lastFetchController = controller;
   const id = setTimeout(()=>controller.abort(), timeout);
   try {
     const res = await fetch(url, { signal: controller.signal, ...opts });
     clearTimeout(id);
+    lastFetchController = null;
+    if (res.status === 429){
+      await new Promise(r => setTimeout(r, 800 + Math.random()*800));
+      throw new Error('Server rate limit (429)');
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
-  } catch (err) { clearTimeout(id); throw err; }
+  } catch (err) {
+    clearTimeout(id);
+    lastFetchController = null;
+    throw err;
+  }
 }
-function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-/* CACHING: simple localStorage geocode cache */
+/* UTIL */
+function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function loadGeocodeCache(){ try { return JSON.parse(localStorage.getItem(geocodeCacheKey) || '{}'); } catch { return {}; } }
 function saveGeocodeCache(obj){ try { localStorage.setItem(geocodeCacheKey, JSON.stringify(obj)); } catch {} }
 
@@ -36,7 +110,7 @@ function initMap(lat=MAP_DEFAULT.lat, lon=MAP_DEFAULT.lon, zoom=MAP_DEFAULT.zoom
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OpenStreetMap' }).addTo(map);
     markerCluster = L.markerClusterGroup({ chunkedLoading:true, maxClusterRadius:50 });
     map.addLayer(markerCluster);
-    map.on('moveend', debounce(onMapMove, 350));
+    map.on('moveend', debounce(()=>{ recordMapMove(); onMapMove(); }, 300));
   } else map.setView([lat, lon], zoom);
 }
 function createSvgIcon(fuel){
@@ -60,7 +134,7 @@ function addMarker(st){
 function setLoading(on){
   const results = document.getElementById('results');
   if (on){
-    results.innerHTML = Array.from({length:6}).map(()=>`<div class="station skeleton" style="height:72px"></div>`).join('');
+    results.innerHTML = Array.from({length:6}).map(()=>`<div class="station skeleton"></div>`).join('');
     markerCluster.clearLayers();
   }
 }
@@ -72,15 +146,13 @@ function renderStationsPage(page=1){
   const start = (page-1)*PAGE_SIZE;
   const pageItems = filteredStations.slice(start, start+PAGE_SIZE);
   markerCluster.clearLayers();
-  pageItems.forEach(s => addMarker(s));
-  if (pageItems[0] && pageItems[0].lat && pageItems[0].lon) map.flyTo([pageItems[0].lat, pageItems[0].lon], 13, { duration:0.7 });
   pageItems.forEach((s, idx) => {
+    addMarker(s);
     const card = document.createElement('article'); card.className='station';
     const price = s.prezzo!=null?`€ ${s.prezzo.toFixed(3)}`:'—';
     card.innerHTML = `<div><h3>${escapeHtml(s.nome)}</h3><div class="meta">${escapeHtml(s.indirizzo||'')} — ${escapeHtml(s.comune||'')}</div></div><div class="actions"><div class="price">${price}</div><div class="meta">${s.distanza!=null? s.distanza.toFixed(2)+' km':''}</div><div style="margin-top:8px"><button onclick="openMaps(${s.lat},${s.lon})">Naviga</button></div></div>`;
     container.appendChild(card);
-    // stagger reveal
-    requestAnimationFrame(()=> setTimeout(()=> card.classList.add('visible'), idx * 40));
+    requestAnimationFrame(()=> setTimeout(()=> card.classList.add('visible'), idx * 30));
   });
   renderPagination(Math.ceil(filteredStations.length/PAGE_SIZE), page);
 }
@@ -106,11 +178,10 @@ function applyFilters({ fuel='', quick='', sort='distance' } = {}){
   filteredStations = list; renderStationsPage(1);
 }
 
-/* GEOCODING / REVERSE (with local cache) */
+/* GEOCODING / REVERSE */
 async function reverseGeocodeEnhanced(lat, lon){
-  const cache = loadGeocodeCache();
   const key = `${lat.toFixed(5)},${lon.toFixed(5)}`;
-  if (cache[key]) return cache[key];
+  if (geocodeCache[key]) return geocodeCache[key];
   try {
     const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&accept-language=it`;
     const res = await fetch(url, { headers:{ 'User-Agent':'PrezziCarburantiApp/1.0' }});
@@ -131,12 +202,12 @@ async function reverseGeocodeEnhanced(lat, lon){
     }
     label = String(label||'').replace(/\s+,/g,',').replace(/\s{2,}/g,' ').trim();
     const out = { label, place, municipality, county, raw:j };
-    cache[key] = out; saveGeocodeCache(cache);
+    geocodeCache[key] = out; saveGeocodeCache(geocodeCache);
     return out;
   } catch (err){ return null; }
 }
 
-/* API wrappers with simple in-memory caching */
+/* API wrappers */
 async function apiCity(city, radius=DEFAULT_RADIUS){
   const key = `city:${city.toLowerCase()}:r${radius}`;
   if (apiCache.has(key)) return apiCache.get(key);
@@ -152,7 +223,7 @@ async function apiNear(lat, lon, radius=DEFAULT_RADIUS){
   return data;
 }
 
-/* MAP MOVE: aggiorna lista in base alla vista */
+/* MAP MOVE */
 async function onMapMove(){
   if (!map) return;
   const bounds = map.getBounds();
@@ -180,7 +251,7 @@ function haversineKm(lat1, lon1, lat2, lon2){
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-/* UI actions */
+/* UI helpers */
 function showLocationBadge(label){ const el=document.getElementById('locationBadge'); if(!el) return; el.style.display='flex'; document.getElementById('locationLabel').textContent=label; }
 function clearLocationBadge(){ const el=document.getElementById('locationBadge'); if(el) el.style.display='none'; document.getElementById('cityInput').value=''; }
 function openMaps(lat, lon){ window.open(`https://www.google.com/maps?q=${lat},${lon}`, '_blank'); }
@@ -189,6 +260,7 @@ function getActiveFuel(){ const a=document.querySelector('.chip.active'); return
 
 /* SEARCH / NEAR handlers */
 async function onSearchCity(){
+  if (challengeActive) { triggerChallenge('Conferma richiesta prima di continuare.'); return; }
   const raw = document.getElementById('cityInput').value; if(!raw.trim()) return;
   setLoading(true);
   try {
@@ -200,8 +272,8 @@ async function onSearchCity(){
     }
   } catch (err){ console.error(err); setError('Ricerca fallita'); } finally { setLoading(false); }
 }
-
 async function onNearMe(){
+  if (challengeActive) { triggerChallenge('Conferma richiesta prima di continuare.'); return; }
   if (!navigator.geolocation){ alert('Geolocalizzazione non supportata'); return; }
   setLoading(true);
   navigator.geolocation.getCurrentPosition(async pos=>{
@@ -219,7 +291,7 @@ async function onNearMe(){
   }, err=>{ setLoading(false); alert('Permesso geolocalizzazione negato o errore'); }, { timeout:12000, maximumAge:60000 });
 }
 
-/* Autocomplete lightweight with cache */
+/* Autocomplete */
 function initCityAutocomplete(){
   const input = document.getElementById('cityInput');
   const suggestions = document.getElementById('suggestions');
@@ -235,7 +307,7 @@ function initCityAutocomplete(){
       cache[q] = items;
       renderSuggestions(items);
     } catch (e) { suggestions.innerHTML=''; suggestions.setAttribute('aria-hidden','true'); }
-  }, 180));
+  }, 140));
 
   function renderSuggestions(items){
     suggestions.innerHTML = '';
@@ -246,7 +318,7 @@ function initCityAutocomplete(){
       btn.className = 'suggestion';
       btn.textContent = it.display_name.split(',')[0];
       btn.addEventListener('click', () => {
-        input.value = btn.textContent;
+        document.getElementById('cityInput').value = btn.textContent;
         suggestions.innerHTML=''; suggestions.setAttribute('aria-hidden','true');
         onSearchCity();
       });
@@ -256,7 +328,7 @@ function initCityAutocomplete(){
   }
 }
 
-/* INIT events */
+/* EVENTS */
 function initEvents(){
   document.getElementById('searchCityBtn').addEventListener('click', ()=>onSearchCity());
   document.getElementById('nearMeBtn').addEventListener('click', ()=>onNearMe());
@@ -264,7 +336,7 @@ function initEvents(){
     document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active')); ch.classList.add('active');
     applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value });
   }));
-  document.getElementById('quickFilter').addEventListener('input', debounce(()=> applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value }), 200));
+  document.getElementById('quickFilter').addEventListener('input', debounce(()=> applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value }), 180));
   document.getElementById('sortPrice').addEventListener('change', ()=> applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value }));
   document.getElementById('radius').addEventListener('input', e=> document.getElementById('radiusValue').textContent = `${e.target.value} km`);
   document.getElementById('clearLocationBtn').addEventListener('click', ()=>{ clearLocationBadge(); currentStations=[]; applyFilters({}); });
@@ -279,28 +351,31 @@ function initEvents(){
     localStorage.setItem('theme', isLight ? 'light' : 'dark');
     document.getElementById('themeToggle').setAttribute('aria-pressed', String(isLight));
   });
+
+  // infinite scroll anchor
+  const anchor = document.getElementById('infiniteAnchor');
+  const io = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        const totalPages = Math.ceil((filteredStations||[]).length / PAGE_SIZE);
+        if (currentPage < totalPages) renderStationsPage(currentPage + 1);
+      }
+    });
+  }, { root: null, rootMargin: '400px', threshold: 0.1 });
+  io.observe(anchor);
 }
 
 /* INIT */
 async function initApp(){
-  // theme persist
   if (localStorage.getItem('theme') === 'light') document.documentElement.classList.add('light');
-
+  geocodeCache = loadGeocodeCache();
   initMap();
   initEvents();
   initCityAutocomplete();
-
-  // initial load: Parma
   try { setLoading(true); currentStations = await apiCity('Parma', DEFAULT_RADIUS); applyFilters({}); } catch(e){} finally { setLoading(false); }
-
-  // register service worker
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js').catch(()=>{});
 }
 
-/* helpers for geocode cache */
-function loadGeocodeCache(){ try { return JSON.parse(localStorage.getItem(geocodeCacheKey) || '{}'); } catch { return {}; } }
-function saveGeocodeCache(obj){ try { localStorage.setItem(geocodeCacheKey, JSON.stringify(obj)); } catch {} }
-
-/* expose */
+/* start */
 window.openMaps = openMaps;
 window.addEventListener('load', initApp);
