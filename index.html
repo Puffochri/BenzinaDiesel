@@ -8,74 +8,83 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="style.css">
 
-  <!-- Leaflet -->
+  <!-- Leaflet + MarkerCluster -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
-  <!-- Optional: marker clustering (uncomment if desired) -->
-  <!--
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script defer src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
-  -->
 </head>
 <body>
 
-  <header class="topbar">
+  <header class="topbar" role="banner">
     <div class="brand">
       <img src="icons/icon-48.png" alt="" class="logo">
-      <h1>Prezzi Carburanti</h1>
+      <div>
+        <h1>Prezzi Carburanti</h1>
+        <p class="tag">Confronta, trova e raggiungi il distributore più conveniente</p>
+      </div>
     </div>
-    <div class="controls-top">
-      <button id="themeToggle" aria-label="Cambia tema">🌙</button>
-      <button id="openFilters" aria-expanded="false" aria-controls="panelFilters">Filtri ▾</button>
+
+    <div class="top-actions">
+      <button id="themeToggle" aria-pressed="false" title="Cambia tema">🌙</button>
+      <button id="openFilters" aria-expanded="false" aria-controls="panelFilters" title="Mostra filtri">⚙️</button>
     </div>
   </header>
 
-  <main class="layout">
+  <main class="layout" role="main">
     <aside id="panelFilters" class="panel" aria-hidden="false">
       <div class="search-row">
-        <input id="cityInput" type="search" placeholder="Cerca città (es. Parma)" aria-label="Cerca città">
-        <button id="searchCityBtn">Cerca</button>
+        <input id="cityInput" type="search" placeholder="Cerca città, es. Parma" aria-label="Cerca città" autocomplete="off">
+        <button id="searchCityBtn" aria-label="Cerca">🔎</button>
       </div>
 
       <div class="row">
-        <button id="nearMeBtn" class="btn-ghost">Vicino a me</button>
+        <button id="nearMeBtn" class="btn-ghost" aria-label="Trova vicino a me">📍 Vicino a me</button>
+        <div class="radius-control">
+          <label for="radius">Raggio</label>
+          <input id="radius" type="range" min="1" max="50" value="10" />
+          <span id="radiusValue">10 km</span>
+        </div>
       </div>
 
-      <label class="label">Carburante</label>
-      <select id="fuelFilter" aria-label="Filtra per carburante">
-        <option value="">Tutti</option>
-        <option value="Benzina">Benzina</option>
-        <option value="Gasolio">Gasolio</option>
-        <option value="GPL">GPL</option>
-        <option value="Metano">Metano</option>
-        <option value="Blue Diesel">Blue Diesel</option>
-        <option value="HVO">HVO</option>
-      </select>
+      <div class="filters">
+        <label>Carburante</label>
+        <div class="chips" role="list">
+          <button class="chip active" data-fuel="">Tutti</button>
+          <button class="chip" data-fuel="Benzina">Benzina</button>
+          <button class="chip" data-fuel="Gasolio">Gasolio</button>
+          <button class="chip" data-fuel="GPL">GPL</button>
+          <button class="chip" data-fuel="Metano">Metano</button>
+          <button class="chip" data-fuel="Blue Diesel">Blue Diesel</button>
+        </div>
 
-      <label class="label">Ordina per</label>
-      <select id="sortPrice" aria-label="Ordina per prezzo">
-        <option value="">Distanza (default)</option>
-        <option value="price-asc">Prezzo ↑</option>
-        <option value="price-desc">Prezzo ↓</option>
-      </select>
+        <label>Ordina</label>
+        <select id="sortPrice" aria-label="Ordina risultati">
+          <option value="distance">Distanza (predef.)</option>
+          <option value="price-asc">Prezzo ↑</option>
+          <option value="price-desc">Prezzo ↓</option>
+          <option value="updated">Più recenti</option>
+        </select>
+      </div>
 
-      <label class="label">Raggio (km)</label>
-      <input id="radius" type="range" min="1" max="50" value="10" />
-      <div class="range-value"><span id="radiusValue">10</span> km</div>
-
-      <div class="small-note">Risultati aggiornati dal dataset ufficiale MIMIT. Cache locale 24h.</div>
+      <div class="small-note">Dati ufficiali MIMIT • Cache locale 24h • Aggiornamenti giornalieri</div>
     </aside>
 
     <section class="map-column">
       <div id="map" class="map" role="application" aria-label="Mappa distributori"></div>
-      <div id="results" class="results" aria-live="polite"></div>
+
+      <div class="toolbar">
+        <input id="quickFilter" placeholder="Cerca nome o indirizzo" aria-label="Filtra risultati" />
+        <div class="pagination" id="pagination"></div>
+      </div>
+
+      <section id="results" class="results" aria-live="polite"></section>
     </section>
   </main>
 
   <footer class="footer">
-    <small>Powered by MIMIT • Worker proxy • Aggiornato automaticamente</small>
+    <small>© 2026 — App non ufficiale • Dati MIMIT</small>
   </footer>
 
   <script defer src="script.js"></script>
