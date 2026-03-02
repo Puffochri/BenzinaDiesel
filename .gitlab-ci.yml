@@ -1,19 +1,21 @@
 stages:
-  - update
+  - build
+  - deploy
 
-update_db:
+build:
+  stage: build
   image: node:18
-  stage: update
-  variables:
-    NODE_ENV: production
-    DATABASE_URL: $DATABASE_URL
-  before_script:
-    - npm ci --no-audit --no-fund
   script:
-    - node scripts/update-db.js
+    - npm ci
+    - npm run build || echo "no build step"
+
+deploy_worker:
+  stage: deploy
+  image: node:18
+  variables:
+    CF_API_TOKEN: $CF_API_TOKEN
+  script:
+    - npm i -g wrangler
+    - wrangler publish
   only:
-    - schedules
-    - triggers
-    - master
-  when: manual
-  tags: []
+    - main

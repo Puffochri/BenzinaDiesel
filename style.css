@@ -1,7 +1,7 @@
 :root{
   --bg:#071025; --panel:#071428; --muted:#9aa4b2; --text:#e6eef8;
   --accent-1:#00d4ff; --accent-2:#6a8cff; --glass:rgba(255,255,255,0.04);
-  --radius:12px; --shadow:0 12px 36px rgba(0,0,0,0.6); --map-height:620px; --transition:300ms;
+  --radius:12px; --shadow:0 12px 36px rgba(0,0,0,0.6); --map-height:640px; --transition:300ms;
 }
 :root.light{
   --bg:#f4f7fb; --panel:#ffffff; --muted:#6b7280; --text:#0f172a;
@@ -13,7 +13,10 @@ html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,"Segoe 
 .brand{display:flex;gap:12px;align-items:center}
 .logo{width:44px;height:44px;border-radius:10px;object-fit:cover}
 .layout{display:grid;grid-template-columns:360px 1fr;gap:16px;padding:16px}
-.panel{background:var(--panel);border-radius:14px;padding:16px;box-shadow:var(--shadow)}
+.panel{background:var(--panel);border-radius:14px;padding:16px;box-shadow:var(--shadow);transform:translateX(0);transition:transform .28s}
+.panel.hidden{transform:translateX(-110%)}
+.overlay{position:fixed;inset:0;background:rgba(2,6,23,0.45);opacity:0;pointer-events:none;transition:opacity .18s;z-index:40}
+.overlay.show{opacity:1;pointer-events:auto}
 .search-row{display:flex;gap:10px;margin-bottom:12px;position:relative}
 .search-wrapper{flex:1;position:relative}
 #cityInput{width:100%;padding:10px;border-radius:10px;border:1px solid var(--glass);background:transparent;color:var(--text)}
@@ -23,8 +26,9 @@ html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,"Segoe 
 .btn-ghost{background:transparent;border:1px solid var(--glass);color:var(--text);padding:8px 10px;border-radius:10px}
 .location-badge{display:flex;align-items:center;gap:10px;padding:10px;border-radius:10px;background:linear-gradient(90deg,var(--accent-1),var(--accent-2));color:#fff;margin-bottom:12px}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
-.chip{padding:8px 12px;border-radius:999px;border:1px solid var(--glass);background:transparent;cursor:pointer;transition:transform .12s}
-.chip.active{background:linear-gradient(90deg,var(--accent-1),var(--accent-2));color:white;border:none;box-shadow:0 10px 26px rgba(0,0,0,0.35)}
+.chip{padding:8px 12px;border-radius:999px;border:1px solid var(--glass);background:transparent;cursor:pointer;transition:transform .12s,box-shadow .12s}
+.chip .icon{width:18px;height:18px;border-radius:4px;background:rgba(255,255,255,0.06)}
+.chip.active{background:linear-gradient(90deg,var(--accent-1),var(--accent-2));color:white;border:none;box-shadow:0 10px 26px rgba(0,0,0,0.35);transform:translateY(-4px)}
 .map-column{display:flex;flex-direction:column;gap:12px}
 .map{height:var(--map-height);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
 .toolbar{display:flex;gap:12px;align-items:center}

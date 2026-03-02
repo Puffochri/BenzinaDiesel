@@ -1,248 +1,161 @@
-/* script.js — versione corretta e stabile
-   - Assicura che tutti i controlli funzionino
-   - Event listeners attaccati dopo DOMContentLoaded
-   - Debounce, AbortController, caching, gestione errori
-*/
+/* script.js — client ottimizzato: throttle, cache, canvas markers, chunked render, worker filter integration */
 
-/* CONFIG */
-const API_BASE = "https://benzinaprezzidiesel.christianritucci04.workers.dev/api";
-const DEFAULT_RADIUS = 10;
+const API_BASE = 'https://<YOUR_WORKER_DOMAIN>/api';
+const CLIENT_CACHE_TTL = 1000 * 60 * 5;
+const clientCache = new Map();
+let map, markerCluster, currentStations = [], filterWorker = null;
 const PAGE_SIZE = 12;
-const MAP_DEFAULT = { lat:44.8015, lon:10.3280, zoom:12 };
 
-/* STATO */
-let map, markerCluster, currentStations = [], filteredStations = [], currentPage = 1;
-let lastController = null;
-const apiCache = new Map();
-const geocodeCacheKey = 'gc_cache_v_final';
-let geocodeCache = loadGeocodeCache();
-
-/* UTILS */
-function debounce(fn, wait=250){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); }; }
-async function fetchJson(url, opts={}, timeout=12000){
-  if (lastController){ try { lastController.abort(); } catch{} lastController = null; }
-  const controller = new AbortController();
-  lastController = controller;
-  const id = setTimeout(()=>controller.abort(), timeout);
-  try {
-    const res = await fetch(url, { signal: controller.signal, ...opts });
-    clearTimeout(id);
-    lastController = null;
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } catch (err) { clearTimeout(id); lastController = null; throw err; }
-}
 function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function loadGeocodeCache(){ try { return JSON.parse(localStorage.getItem(geocodeCacheKey) || '{}'); } catch { return {}; } }
-function saveGeocodeCache(obj){ try { localStorage.setItem(geocodeCacheKey, JSON.stringify(obj)); } catch {} }
+function cacheKey(lat, lon, radius, limit=150){ return `${lat.toFixed(3)}:${lon.toFixed(3)}:r${Math.round(radius)}:l${limit}`; }
+function setLoading(on){ const r=document.getElementById('results'); if (on) r.innerHTML = Array.from({length:6}).map(()=>`<div class="station skeleton"></div>`).join(''); }
 
-/* MAP INIT */
-function initMap(lat=MAP_DEFAULT.lat, lon=MAP_DEFAULT.lon, zoom=MAP_DEFAULT.zoom){
-  if (!map){
-    map = L.map('map', { zoomControl:true }).setView([lat, lon], zoom);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OpenStreetMap' }).addTo(map);
-    markerCluster = L.markerClusterGroup({ chunkedLoading:true, maxClusterRadius:50 });
-    map.addLayer(markerCluster);
-    map.on('moveend', debounce(onMapMove, 350));
-  } else {
-    map.setView([lat, lon], zoom);
+async function fetchNearCached(lat, lon, radius, limit=200){
+  const key = cacheKey(lat, lon, radius, limit);
+  const now = Date.now();
+  const cached = clientCache.get(key);
+  if (cached && (now - cached.ts) < CLIENT_CACHE_TTL){
+    fetch(`${API_BASE}/near?lat=${lat}&lon=${lon}&radius=${radius}&limit=${limit}`)
+      .then(r => r.json()).then(d => clientCache.set(key, { ts: Date.now(), data: d })).catch(()=>{});
+    return cached.data;
   }
-}
-
-/* ICON + MARKER */
-function createSvgIcon(fuel){
-  const color = (fuel||'').toLowerCase().includes('benzina') ? '#ff6b6b'
-    : (fuel||'').toLowerCase().includes('gasolio') ? '#00d4ff'
-    : (fuel||'').toLowerCase().includes('gpl') ? '#f59e0b'
-    : '#9aa4b2';
-  const svg = encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='44' height='44' viewBox='0 0 24 24'><path fill='${color}' d='M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z'/><circle cx='12' cy='9' r='2.2' fill='#fff'/></svg>`);
-  return L.icon({ iconUrl: `data:image/svg+xml;charset=utf-8,${svg}`, iconSize:[44,44], iconAnchor:[22,44], popupAnchor:[0,-44] });
-}
-function addMarker(st){
-  if (!st.lat || !st.lon) return;
-  const icon = createSvgIcon(st.carburante);
-  const price = st.prezzo != null ? `€ ${st.prezzo.toFixed(3)}` : '—';
-  const html = `<div style="min-width:220px"><strong>${escapeHtml(st.nome)}</strong><br/><small class="meta">${escapeHtml(st.indirizzo||'')} — ${escapeHtml(st.comune||'')}</small><div style="margin-top:8px"><strong>${escapeHtml(st.carburante)}</strong>: <span style="color:var(--accent-1)">${price}</span></div><div style="margin-top:8px"><a target="_blank" rel="noopener" href="https://www.google.com/maps?q=${st.lat},${st.lon}">Apri in Maps</a></div></div>`;
-  const m = L.marker([st.lat, st.lon], { icon }).bindPopup(html, { minWidth: 220 });
-  markerCluster.addLayer(m);
+  const res = await fetch(`${API_BASE}/near?lat=${lat}&lon=${lon}&radius=${radius}&limit=${limit}`);
+  if (!res.ok) throw new Error('API error');
+  const data = await res.json();
+  clientCache.set(key, { ts: Date.now(), data });
+  return data;
 }
 
-/* RENDER */
-function setLoading(on){
-  const results = document.getElementById('results');
-  if (on){
-    results.innerHTML = Array.from({length:6}).map(()=>`<div class="station skeleton"></div>`).join('');
-    if (markerCluster) markerCluster.clearLayers();
-  }
+function fuelColor(fuel){
+  if (!fuel) return '#9aa4b2';
+  const f = fuel.toLowerCase();
+  if (f.includes('benzina')) return '#ff6b6b';
+  if (f.includes('gasolio')) return '#00d4ff';
+  if (f.includes('gpl')) return '#f59e0b';
+  return '#8b8f98';
 }
-function renderStationsPage(page=1){
-  const container = document.getElementById('results');
-  container.innerHTML = '';
-  if (!filteredStations || filteredStations.length===0){
-    container.innerHTML = `<div class="station"><p class="meta">Nessun distributore trovato.</p></div>`;
-    if (markerCluster) markerCluster.clearLayers();
-    return;
-  }
-  currentPage = page;
-  const start = (page-1)*PAGE_SIZE;
-  const pageItems = filteredStations.slice(start, start+PAGE_SIZE);
-  if (markerCluster) markerCluster.clearLayers();
-  pageItems.forEach((s, idx) => {
-    addMarker(s);
-    const card = document.createElement('article'); card.className='station';
-    const price = s.prezzo!=null?`€ ${s.prezzo.toFixed(3)}`:'—';
-    card.innerHTML = `<div><h3>${escapeHtml(s.nome)}</h3><div class="meta">${escapeHtml(s.indirizzo||'')} — ${escapeHtml(s.comune||'')}</div></div><div class="actions"><div class="price">${price}</div><div class="meta">${s.distanza!=null? s.distanza.toFixed(2)+' km':''}</div><div style="margin-top:8px"><button onclick="openMaps(${s.lat},${s.lon})">Naviga</button></div></div>`;
-    container.appendChild(card);
-    requestAnimationFrame(()=> setTimeout(()=> card.classList.add('visible'), idx * 30));
+function createCanvasMarker(st){
+  if (!st.lat || !st.lon) return null;
+  const color = fuelColor(st.carburante);
+  const circle = L.circleMarker([st.lat, st.lon], {
+    radius: 7, fillColor: color, color: '#111', weight: 0.6, opacity: 0.95, fillOpacity: 0.95, renderer: L.canvas()
   });
-  renderPagination(Math.ceil(filteredStations.length/PAGE_SIZE), page);
+  circle.bindTooltip(`<strong>${escapeHtml(st.nome)}</strong><br/><small>${escapeHtml(st.indirizzo||'')}</small>`, { direction:'top' });
+  circle.on('click', ()=> showStationDetail(st));
+  return circle;
 }
-function renderPagination(totalPages, current){
-  const p = document.getElementById('pagination'); p.innerHTML='';
-  if (totalPages<=1) return;
-  const addBtn = (label, page, disabled=false) => {
-    const b = document.createElement('button');
-    b.textContent = label;
-    b.disabled = disabled;
-    b.addEventListener('click', ()=> renderStationsPage(page));
-    return b;
-  };
-  p.appendChild(addBtn('«', 1, current===1));
-  const start = Math.max(1, current-2), end = Math.min(totalPages, current+2);
-  for (let i=start;i<=end;i++){
-    const b = addBtn(i, i);
-    if (i===current) b.classList.add('chip','active');
-    p.appendChild(b);
+async function bulkRenderStations(stations){
+  markerCluster.clearLayers();
+  const CHUNK = 200;
+  for (let i=0;i<stations.length;i+=CHUNK){
+    const slice = stations.slice(i, i+CHUNK);
+    const layers = slice.map(s => createCanvasMarker(s)).filter(Boolean);
+    markerCluster.addLayers(layers);
+    await new Promise(r => requestAnimationFrame(r));
   }
-  p.appendChild(addBtn('»', totalPages, current===totalPages));
 }
 
-/* FILTERS */
-function applyFilters({ fuel='', quick='', sort='distance' } = {}){
-  let list = currentStations.slice();
-  if (fuel) list = list.filter(s => (s.carburante||'').toLowerCase() === fuel.toLowerCase());
-  if (quick){ const q = quick.toLowerCase(); list = list.filter(s => (s.nome||'').toLowerCase().includes(q) || (s.indirizzo||'').toLowerCase().includes(q)); }
-  if (sort==='price-asc') list.sort((a,b)=> (a.prezzo||Infinity)-(b.prezzo||Infinity));
-  else if (sort==='price-desc') list.sort((a,b)=> (b.prezzo||-Infinity)-(a.prezzo||-Infinity));
-  else if (sort==='updated') list.sort((a,b)=> new Date(b.aggiornato)-new Date(a.aggiornato));
-  else list.sort((a,b)=> (a.distanza||Infinity)-(b.distanza||Infinity));
-  filteredStations = list;
-  renderStationsPage(1);
-}
-
-/* GEOCODING / REVERSE (cache) */
-async function reverseGeocodeEnhanced(lat, lon){
-  const key = `${lat.toFixed(5)},${lon.toFixed(5)}`;
-  if (geocodeCache[key]) return geocodeCache[key];
-  try {
-    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&accept-language=it`;
-    const res = await fetch(url, { headers:{ 'User-Agent':'PrezziCarburantiApp/1.0' }});
-    if (!res.ok) throw new Error('Reverse failed');
-    const j = await res.json(); const addr = j.address||{};
-    const placeCandidates = [addr.town, addr.village, addr.hamlet, addr.suburb, addr.locality, addr.neighbourhood, addr.city_district, addr.city].filter(Boolean);
-    const place = placeCandidates.length?placeCandidates[0]:(j.name||null);
-    const municipality = addr.municipality || addr.county || addr.city || addr.town || null;
-    const county = addr.county || null;
-    let label = place || (j.display_name? j.display_name.split(',')[0] : null);
-    if (place && /^taneto$/i.test(place.trim())){
-      const ctx = `${(municipality||'')} ${(county||'')}`.toLowerCase();
-      if (ctx.includes('gattatico') || ctx.includes('reggio')) label = 'Taneto di Gattatico';
-      else if (ctx.includes('parma')) label = 'Taneto di Parma';
-      else if (county) label = `Taneto (${county.split(',')[0]})`;
-    } else {
-      if (place && municipality && !place.toLowerCase().includes(municipality.toLowerCase())) label = `${place}${municipality? ' di ' + municipality : ''}`;
-    }
-    label = String(label||'').replace(/\s+,/g,',').replace(/\s{2,}/g,' ').trim();
-    const out = { label, place, municipality, county, raw:j };
-    geocodeCache[key] = out; saveGeocodeCache(geocodeCache);
-    return out;
-  } catch (err){ return null; }
-}
-
-/* API wrappers (cache) */
-async function apiCity(city, radius=DEFAULT_RADIUS){
-  const key = `city:${city.toLowerCase()}:r${radius}`;
-  if (apiCache.has(key)) return apiCache.get(key);
-  const data = await fetchJson(`${API_BASE}/city/${encodeURIComponent(city)}?radius=${radius}`);
-  apiCache.set(key, data);
-  return data;
-}
-async function apiNear(lat, lon, radius=DEFAULT_RADIUS){
-  const key = `near:${lat.toFixed(4)}:${lon.toFixed(4)}:r${Math.round(radius)}`;
-  if (apiCache.has(key)) return apiCache.get(key);
-  const data = await fetchJson(`${API_BASE}/near?lat=${lat}&lon=${lon}&radius=${radius}`);
-  apiCache.set(key, data);
-  return data;
-}
-
-/* MAP MOVE handler */
-async function onMapMove(){
-  if (!map) return;
+function computeRadiusFromView(map){
   const bounds = map.getBounds();
-  const center = bounds.getCenter();
   const ne = bounds.getNorthEast();
   const sw = bounds.getSouthWest();
-  const radiusKm = haversineKm(ne.lat, ne.lng, sw.lat, sw.lng) / 2;
-  const radius = Math.min(Math.max(radiusKm, 1), 100);
-  setLoading(true);
+  const R = 6371;
+  const dLat = (ne.lat - sw.lat) * Math.PI / 180;
+  const dLon = (ne.lng - sw.lng) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(sw.lat*Math.PI/180)*Math.cos(ne.lat*Math.PI/180)*Math.sin(dLon/2)**2;
+  const diagKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return Math.max(1, diagKm / 2);
+}
+
+function throttle(fn, wait){
+  let last = 0, timer = null;
+  return function(...args){
+    const now = Date.now();
+    const remaining = wait - (now - last);
+    if (remaining <= 0){
+      if (timer){ clearTimeout(timer); timer = null; }
+      last = now;
+      fn.apply(this, args);
+    } else if (!timer){
+      timer = setTimeout(()=>{ last = Date.now(); timer = null; fn.apply(this, args); }, remaining);
+    }
+  };
+}
+
+const onMapMoveThrottled = throttle(async () => {
+  if (!map) return;
+  const center = map.getCenter();
+  const radius = computeRadiusFromView(map);
   try {
-    const data = await apiNear(center.lat, center.lng, radius);
-    currentStations = data || [];
-    applyFilters({ fuel: getActiveFuel(), quick: document.getElementById('quickFilter').value, sort: document.getElementById('sortPrice').value });
+    setLoading(true);
+    const data = await fetchNearCached(center.lat, center.lng, radius, 300);
+    currentStations = data;
+    if (filterWorker){
+      filterWorker.postMessage({ cmd:'filter', stations: currentStations, filters: { centerLat:center.lat, centerLon:center.lng, fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value } });
+    } else {
+      await bulkRenderStations(currentStations);
+      applyFiltersUI();
+    }
   } catch (err) {
-    console.error('onMapMove error', err);
-    setError('Errore aggiornamento mappa');
+    console.error('fetchNear error', err);
+    setError('Errore caricamento distributori');
   } finally {
     setLoading(false);
   }
-}
-function haversineKm(lat1, lon1, lat2, lon2){
-  const R = 6371;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}, 600);
+
+function renderStationsList(stations){
+  const container = document.getElementById('results');
+  container.innerHTML = '';
+  if (!stations || stations.length === 0){ container.innerHTML = `<div class="station"><p class="meta">Nessun distributore trovato.</p></div>`; markerCluster.clearLayers(); return; }
+  const pageItems = stations.slice(0, PAGE_SIZE);
+  pageItems.forEach((s, idx) => {
+    const card = document.createElement('article'); card.className='station visible';
+    const price = s.prezzo!=null?`€ ${s.prezzo.toFixed(3)}`:'—';
+    card.innerHTML = `<div><h3>${escapeHtml(s.nome)}</h3><div class="meta">${escapeHtml(s.indirizzo||'')} — ${escapeHtml(s.comune||'')}</div></div><div class="actions"><div class="price">${price}</div><div class="meta">${s.distanza!=null? s.distanza.toFixed(2)+' km':''}</div><div style="margin-top:8px"><button onclick="openMaps(${s.lat},${s.lon})">Naviga</button></div></div>`;
+    container.appendChild(card);
+  });
 }
 
-/* UI helpers */
-function showLocationBadge(label){ const el=document.getElementById('locationBadge'); if(!el) return; el.style.display='flex'; document.getElementById('locationLabel').textContent=label; }
-function clearLocationBadge(){ const el=document.getElementById('locationBadge'); if(el) el.style.display='none'; document.getElementById('cityInput').value=''; }
-function openMaps(lat, lon){ window.open(`https://www.google.com/maps?q=${lat},${lon}`, '_blank'); }
-function setError(msg){ document.getElementById('results').innerHTML = `<div class="station"><p class="meta">Errore: ${escapeHtml(msg)}</p></div>`; if (markerCluster) markerCluster.clearLayers(); }
 function getActiveFuel(){ const a=document.querySelector('.chip.active'); return a? a.dataset.fuel : ''; }
+function applyFiltersUI(){ renderStationsList(currentStations); }
 
-/* SEARCH / NEAR handlers */
-async function onSearchCity(){
-  const raw = document.getElementById('cityInput').value; if(!raw.trim()) return;
-  setLoading(true);
-  try {
-    const radius = Number(document.getElementById('radius').value) || DEFAULT_RADIUS;
-    currentStations = await apiCity(raw, radius);
-    applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value });
-    if (currentStations && currentStations.length>0 && currentStations[0].lat && currentStations[0].lon) {
-      map.flyTo([currentStations[0].lat, currentStations[0].lon], 12, { duration: 0.8 });
-    }
-  } catch (err){ console.error(err); setError('Ricerca fallita'); } finally { setLoading(false); }
-}
 async function onNearMe(){
   if (!navigator.geolocation){ alert('Geolocalizzazione non supportata'); return; }
   setLoading(true);
   navigator.geolocation.getCurrentPosition(async pos=>{
     try {
-      const lat=pos.coords.latitude, lon=pos.coords.longitude;
-      initMap(lat, lon, 13);
-      const info = await reverseGeocodeEnhanced(lat, lon);
+      const lat = pos.coords.latitude, lon = pos.coords.longitude;
+      map.flyTo([lat, lon], 13, { duration: 0.8 });
+      const info = await reverseGeocode(lat, lon);
       const label = (info && info.label) ? info.label : 'Posizione corrente';
       document.getElementById('cityInput').value = label;
-      showLocationBadge(label);
-      const radius = Number(document.getElementById('radius').value) || DEFAULT_RADIUS;
-      try { currentStations = await apiCity(label, radius); } catch(e){ currentStations = await apiNear(lat, lon, radius); }
-      applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value });
-    } catch (err){ console.error(err); setError('Errore posizione'); } finally { setLoading(false); }
+      document.getElementById('locationLabel').textContent = label;
+      document.getElementById('locationBadge').style.display = 'flex';
+      const radius = Number(document.getElementById('radius').value) || 10;
+      const data = await fetchNearCached(lat, lon, radius, 300);
+      currentStations = data;
+      if (filterWorker) filterWorker.postMessage({ cmd:'filter', stations: currentStations, filters: { centerLat:lat, centerLon:lon, fuel:getActiveFuel(), quick:'', sort:document.getElementById('sortPrice').value } });
+      else { await bulkRenderStations(currentStations); applyFiltersUI(); }
+    } catch (err) { console.error(err); setError('Errore posizione'); } finally { setLoading(false); }
   }, err=>{ setLoading(false); alert('Permesso geolocalizzazione negato o errore'); }, { timeout:12000, maximumAge:60000 });
 }
+async function reverseGeocode(lat, lon){
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&accept-language=it`;
+    const res = await fetch(url, { headers:{ 'User-Agent':'PrezziCarburantiApp/1.0' }});
+    if (!res.ok) return null;
+    const j = await res.json();
+    const addr = j.address||{};
+    const place = addr.town || addr.village || addr.city || j.name || null;
+    return { label: place };
+  } catch { return null; }
+}
 
-/* Autocomplete */
+function showStationDetail(st){ /* implementa pannello laterale o popup avanzato */ }
+function openMaps(lat, lon){ window.open(`https://www.google.com/maps?q=${lat},${lon}`, '_blank'); }
+function setError(msg){ document.getElementById('results').innerHTML = `<div class="station"><p class="meta">Errore: ${escapeHtml(msg)}</p></div>`; markerCluster.clearLayers(); }
+
 function initCityAutocomplete(){
   const input = document.getElementById('cityInput');
   const suggestions = document.getElementById('suggestions');
@@ -260,9 +173,7 @@ function initCityAutocomplete(){
     } catch (e) { suggestions.innerHTML=''; suggestions.setAttribute('aria-hidden','true'); }
   }, 140));
 
-  input.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter') { ev.preventDefault(); document.getElementById('searchCityBtn').click(); }
-  });
+  input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); document.getElementById('searchCityBtn').click(); } });
 
   function renderSuggestions(items){
     suggestions.innerHTML = '';
@@ -275,7 +186,7 @@ function initCityAutocomplete(){
       btn.addEventListener('click', () => {
         input.value = btn.textContent;
         suggestions.innerHTML=''; suggestions.setAttribute('aria-hidden','true');
-        onSearchCity();
+        document.getElementById('searchCityBtn').click();
       });
       suggestions.appendChild(btn);
     });
@@ -283,54 +194,99 @@ function initCityAutocomplete(){
   }
 }
 
-/* EVENTS wiring (DOM ready) */
+function debounce(fn, wait=220){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); }; }
+
+function initFilterWorker(){
+  try {
+    filterWorker = new Worker('worker-filter.js');
+    filterWorker.onmessage = (ev) => {
+      if (ev.data.cmd === 'filtered'){
+        const filtered = ev.data.data;
+        currentStations = filtered;
+        bulkRenderStations(filtered).then(()=> renderStationsList(filtered));
+      }
+    };
+  } catch (e){ console.warn('Worker non disponibile', e); filterWorker = null; }
+}
+
 function initEvents(){
-  document.getElementById('searchCityBtn').addEventListener('click', ()=>onSearchCity());
-  document.getElementById('nearMeBtn').addEventListener('click', ()=>onNearMe());
+  document.getElementById('searchCityBtn').addEventListener('click', onSearchCity);
+  document.getElementById('nearMeBtn').addEventListener('click', onNearMe);
   document.querySelectorAll('.chip').forEach(ch=>ch.addEventListener('click', ()=>{
     document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active')); ch.classList.add('active');
-    applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value });
+    if (filterWorker) filterWorker.postMessage({ cmd:'filter', stations: currentStations, filters: { centerLat: map.getCenter().lat, centerLon: map.getCenter().lng, fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value } });
+    else applyFiltersUI();
   }));
-  document.getElementById('quickFilter').addEventListener('input', debounce(()=> applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value }), 180));
-  document.getElementById('sortPrice').addEventListener('change', ()=> applyFilters({ fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value }));
-  document.getElementById('radius').addEventListener('input', e=> document.getElementById('radiusValue').textContent = `${e.target.value} km`);
-  document.getElementById('clearLocationBtn').addEventListener('click', ()=>{ clearLocationBadge(); document.getElementById('cityInput').value=''; currentStations=[]; applyFilters({}); });
-  document.getElementById('openFilters').addEventListener('click', ()=> {
-    const panelBtn = document.getElementById('openFilters'); const panel = document.getElementById('panelFilters');
-    const expanded = panelBtn.getAttribute('aria-expanded') === 'true';
-    panelBtn.setAttribute('aria-expanded', String(!expanded));
-    panel.style.display = expanded ? 'none' : 'block';
+  document.getElementById('quickFilter').addEventListener('input', debounce(()=> {
+    if (filterWorker) filterWorker.postMessage({ cmd:'filter', stations: currentStations, filters: { centerLat: map.getCenter().lat, centerLon: map.getCenter().lng, fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value } });
+    else applyFiltersUI();
+  }, 180));
+  document.getElementById('sortPrice').addEventListener('change', ()=> {
+    if (filterWorker) filterWorker.postMessage({ cmd:'filter', stations: currentStations, filters: { centerLat: map.getCenter().lat, centerLon: map.getCenter().lng, fuel:getActiveFuel(), quick:document.getElementById('quickFilter').value, sort:document.getElementById('sortPrice').value } });
+    else applyFiltersUI();
   });
+  document.getElementById('radius').addEventListener('input', e=> {
+    document.getElementById('radiusValue').textContent = `${e.target.value} km`;
+    document.getElementById('radiusNumber').value = e.target.value;
+  });
+  document.getElementById('radiusNumber').addEventListener('input', e=> {
+    const v = Math.max(1, Math.min(50, Number(e.target.value) || 10));
+    document.getElementById('radius').value = v;
+    document.getElementById('radiusValue').textContent = `${v} km`;
+  });
+  document.getElementById('clearLocationBtn').addEventListener('click', ()=>{ document.getElementById('locationBadge').style.display='none'; document.getElementById('cityInput').value=''; currentStations=[]; applyFiltersUI(); });
+  document.getElementById('openFilters').addEventListener('click', ()=> toggleFilters(true));
+  document.getElementById('panelOverlay').addEventListener('click', ()=> toggleFilters(false));
   document.getElementById('themeToggle').addEventListener('click', ()=> {
     const isLight = document.documentElement.classList.toggle('light');
     localStorage.setItem('theme', isLight ? 'light' : 'dark');
     document.getElementById('themeToggle').setAttribute('aria-pressed', String(isLight));
   });
-
-  // infinite scroll anchor
-  const anchor = document.getElementById('infiniteAnchor');
-  const io = new IntersectionObserver(entries => {
-    entries.forEach(e => {
-      if (e.isIntersecting) {
-        const totalPages = Math.ceil((filteredStations||[]).length / PAGE_SIZE);
-        if (currentPage < totalPages) renderStationsPage(currentPage + 1);
-      }
-    });
-  }, { root: null, rootMargin: '400px', threshold: 0.1 });
-  io.observe(anchor);
 }
 
-/* INIT app */
-async function initApp(){
+function toggleFilters(open){
+  const panel = document.getElementById('panelFilters');
+  const overlay = document.getElementById('panelOverlay');
+  if (open){
+    panel.classList.remove('hidden'); panel.setAttribute('aria-hidden','false');
+    overlay.classList.add('show'); overlay.hidden = false;
+    document.getElementById('openFilters').setAttribute('aria-expanded','true');
+  } else {
+    panel.classList.add('hidden'); panel.setAttribute('aria-hidden','true');
+    overlay.classList.remove('show'); overlay.hidden = true;
+    document.getElementById('openFilters').setAttribute('aria-expanded','false');
+  }
+}
+
+async function onSearchCity(){
+  const raw = document.getElementById('cityInput').value; if(!raw.trim()) return;
+  setLoading(true);
+  try {
+    const radius = Number(document.getElementById('radius').value) || 10;
+    const data = await fetch(`${API_BASE}/city/${encodeURIComponent(raw)}?radius=${radius}`).then(r=>r.json());
+    currentStations = data;
+    if (filterWorker) filterWorker.postMessage({ cmd:'filter', stations: currentStations, filters: { centerLat: data[0]?.lat || map.getCenter().lat, centerLon: data[0]?.lon || map.getCenter().lng, fuel:getActiveFuel(), quick:'', sort:document.getElementById('sortPrice').value } });
+    else { await bulkRenderStations(currentStations); applyFiltersUI(); if (data[0] && data[0].lat) map.flyTo([data[0].lat, data[0].lon], 12); }
+  } catch (err) { console.error(err); setError('Ricerca fallita'); } finally { setLoading(false); }
+}
+
+function initApp(){
   if (localStorage.getItem('theme') === 'light') document.documentElement.classList.add('light');
-  geocodeCache = loadGeocodeCache();
+  initFilterWorker();
   initMap();
   initEvents();
   initCityAutocomplete();
-  try { setLoading(true); currentStations = await apiCity('Parma', DEFAULT_RADIUS); applyFilters({}); } catch(e){} finally { setLoading(false); }
+  (async ()=>{ setLoading(true); try { const data = await fetchNearCached(44.8015, 10.3280, 10, 200); currentStations = data; await bulkRenderStations(data); renderStationsList(data); } catch{} finally{ setLoading(false); } })();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js').catch(()=>{});
 }
 
-/* Expose helper */
+function initMap(){
+  map = L.map('map', { preferCanvas: true, zoomControl:true }).setView([44.8015, 10.3280], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OpenStreetMap' }).addTo(map);
+  markerCluster = L.markerClusterGroup({ chunkedLoading:true, maxClusterRadius:50 });
+  map.addLayer(markerCluster);
+  map.on('moveend', onMapMoveThrottled);
+}
+
 window.openMaps = openMaps;
 window.addEventListener('DOMContentLoaded', initApp);
