@@ -1,0 +1,19 @@
+stages:
+  - update
+
+update_db:
+  image: node:18
+  stage: update
+  variables:
+    NODE_ENV: production
+    DATABASE_URL: $DATABASE_URL
+  before_script:
+    - npm ci --no-audit --no-fund
+  script:
+    - node scripts/update-db.js
+  only:
+    - schedules
+    - triggers
+    - master
+  when: manual
+  tags: []
